@@ -4,6 +4,10 @@ slurm_outs/*
 data/runs/*
 logs/*
 data/barcodes/*
+# the three barcode sets this repository ships
+!data/barcodes/B
+!data/barcodes/B2
+!data/barcodes/T
 results/*
 
 # host-local settings
