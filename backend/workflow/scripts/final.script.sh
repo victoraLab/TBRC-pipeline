@@ -208,13 +208,22 @@ if command -v Rscript >/dev/null 2>&1; then
     fi
 fi
 
+# The two plate plots are diagnostics, and under `set -e` an unguarded failure here
+# stops the script before the archive is built. ggplate's colour scale needs at
+# least two wells with data, so a sparse plate (a small subsample, a failed
+# library) made a run that had assembled and annotated deliver nothing. Skip the
+# figure, say so, and keep going, as the clonotype QC below already does.
 if [[ -f "${DESTINY}/BC.stats.txt" && -f "${DESTINY}/collapsed.stats.txt" ]] && command -v Rscript >/dev/null 2>&1; then
-    Rscript "${PLATE_QC_SCRIPT}" "${DESTINY}/" "${PLATE_QC_DIR}" "${SAMPLE}"
+    if ! Rscript "${PLATE_QC_SCRIPT}" "${DESTINY}/" "${PLATE_QC_DIR}" "${SAMPLE}"; then
+        echo "Plate QC failed and was skipped; the run continues without its plate figures." >&2
+    fi
 fi
 
 if [[ -f "${IMGT_READY_FASTA_PATH}" ]] && command -v Rscript >/dev/null 2>&1; then
     if Rscript -e "quit(status = if (requireNamespace('ggplate', quietly = TRUE) && requireNamespace('clonality', quietly = TRUE)) 0 else 1)" >/dev/null 2>&1; then
-        Rscript "${PLATE_DEPTH_QC_SCRIPT}" "${IMGT_READY_FASTA_PATH}" "${PLATE_QC_DIR}"
+        if ! Rscript "${PLATE_DEPTH_QC_SCRIPT}" "${IMGT_READY_FASTA_PATH}" "${PLATE_QC_DIR}"; then
+            echo "Plate read-depth QC failed and was skipped; the run continues without it." >&2
+        fi
     else
         echo "Plate read-depth QC skipped because ggplate and/or clonality are not installed." >&2
     fi
