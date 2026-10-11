@@ -36,6 +36,7 @@ Create the Conda environment from the repository root [`environment.yml`](enviro
 ```bash
 conda env create -f environment.yml
 conda activate snakemake
+Rscript install_r_pins.R   # CRAN versions that differ from the conda builds (ggplate 0.2.0 etc.)
 ```
 
 Useful verification:

@@ -60,6 +60,7 @@ The repository root [`environment.yml`](environment.yml) is the saved backend en
 ```bash
 conda env create -f environment.yml
 conda activate snakemake
+Rscript install_r_pins.R   # CRAN versions that differ from the conda builds (ggplate 0.2.0 etc.)
 ```
 
 This environment already includes most core backend dependencies such as:
