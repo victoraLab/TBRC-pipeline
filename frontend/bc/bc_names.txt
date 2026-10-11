@@ -1,0 +1,4 @@
+"bcname"
+"B cell" "B"
+"B cell2" "B2"
+"T cell" "T"

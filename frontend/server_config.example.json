@@ -1,0 +1,224 @@
+{
+  "storage_server": {
+    "storage1": {
+      "rawdata_path": "user@storage1.example.org:/path/to/pipelines/tbrc/rawdata/",
+      "results_path": "user@storage1.example.org:/path/to/pipelines/tbrc/results/",
+      "ssh_port": 22,
+      "web_port": 0,
+      "transfer_mode": "push"
+    }
+  },
+  "cluster": {
+    "dtn_host": "user@dtn.hpc.example.org",
+    "ssh_host": "login.hpc.example.org",
+    "pipeline_root": "/path/to/TBRC/backend",
+    "snakemake_env": "snakemake",
+    "path_prefix": "/path/to/miniforge3/condabin:/usr/local/bin:/usr/bin",
+    "igblast_bin": "igblastn",
+    "igblast_data": "/path/to/TBRC/backend/igblast/internal_data",
+    "igblast_organism": "human",
+    "igblast_db_v": "",
+    "igblast_db_d": "",
+    "igblast_db_j": "",
+    "igblast_auxiliary_data": "/path/to/TBRC/backend/igblast/optional_file",
+    "notification_admin_email": "admin@example.org"
+  },
+  "metrics": {
+    "_comment": "How the usage tiles estimate manual effort. Set manual_hours_per_run to charge a fixed cost per run instead of scaling with file size; set both to combine them. run_index_offset lets the counter continue from historical runs that predate this ledger.",
+    "manual_minutes_per_100mb": 29,
+    "manual_hours_per_run": 0,
+    "run_index_offset": 0
+  },
+  "barcode_defaults": {
+    "_comment": "Per barcode set: the chain it targets and the 5' handle to trim. Validated against real libraries on 2026-08-25. B sets: GGGAATTCGAGGTGCAGCTGCAGGAGTCTGG is a universal handle (GGG + EcoRI + the EVQLQESG consensus) followed by a 23 nt gene-specific primer, which is why luka_light cuts a further 23 bases. T: CCAGGGTTTTCCCAGTCACGAC (M13/pUC forward tail) is the COMPLETE handle -- per-base entropy over 71,458 real TRB reads is 1.6-1.9 bits from the very next base, so no primer footprint follows it and no extra offset is needed.",
+    "B": {
+      "chain": "B",
+      "trim_seq": "GGGAATTCGAGGTGCAGCTGCAGGAGTCTGG"
+    },
+    "B2": {
+      "chain": "B",
+      "trim_seq": "GGGAATTCGAGGTGCAGCTGCAGGAGTCTGG"
+    },
+    "T": {
+      "chain": "T",
+      "trim_seq": "CCAGGGTTTTCCCAGTCACGAC"
+    }
+  },
+  "costs": {
+    "_comment": "Cost estimate for the card on the submit tab. Sequencing prices are the RU Genomics Resource Center rate card, transcribed 2026-08-27; edit them here when the rate card changes. Library prep is what the lab spends per 96-well barcode plate on its own bench and is an estimate, not an invoice.",
+    "currency": "USD",
+    "rate_card_source": "RU Genomics Resource Center price list and Plasmidsaurus public pricing, both transcribed 2026-08-27",
+    "default_user_type": "ru_user",
+    "default_sequencing": "miseq_nano_2x250",
+    "sequencing": {
+      "miseq_nano_2x250": {
+        "label": "MiSeq Nano \u2014 2 x 250bp (1M reads, 2019 rate)",
+        "pricing": "flat",
+        "ru_user": 360,
+        "external_academic": 450,
+        "reads_millions": 1,
+        "read_config": "2x250",
+        "_note": "The original MiSeq, not the i100, on the 1M-read Nano flowcell. Roughly 90% of the libraries in this database were run this way, so it is the default for costing them. Price is from the 2019 list and does not appear on the current rate card; the external figure is the usual 1.25x and is inferred, not quoted."
+      },
+      "miseq_i100_5m_2x150": {
+        "label": "MiSeq i100 5M \u2014 2 x 150bp / 1 x 300bp",
+        "pricing": "flat",
+        "ru_user": 750,
+        "external_academic": 938,
+        "reads_millions": 5,
+        "read_config": "2x150"
+      },
+      "miseq_i100_5m_2x300": {
+        "label": "MiSeq i100 5M \u2014 2 x 300bp",
+        "pricing": "flat",
+        "ru_user": 1150,
+        "external_academic": 1438,
+        "reads_millions": 5,
+        "read_config": "2x300"
+      },
+      "miseq_i100_25m_2x50": {
+        "label": "MiSeq i100 25M \u2014 2 x 50bp / 1 x 100bp",
+        "pricing": "flat",
+        "ru_user": 1100,
+        "external_academic": 1375,
+        "reads_millions": 25,
+        "read_config": "2x50"
+      },
+      "miseq_i100_25m_2x150": {
+        "label": "MiSeq i100 25M \u2014 2 x 150bp / 1 x 300bp",
+        "pricing": "flat",
+        "ru_user": 1600,
+        "external_academic": 2000,
+        "reads_millions": 25,
+        "read_config": "2x150"
+      },
+      "miseq_i100_25m_2x300": {
+        "label": "MiSeq i100 25M \u2014 2 x 300bp",
+        "pricing": "flat",
+        "ru_user": 1900,
+        "external_academic": 2375,
+        "reads_millions": 25,
+        "read_config": "2x300"
+      },
+      "miseq_i100_25m_2x500": {
+        "label": "MiSeq i100 25M \u2014 2 x 500bp",
+        "pricing": "flat",
+        "ru_user": 2500,
+        "external_academic": 3125,
+        "reads_millions": 25,
+        "read_config": "2x500"
+      },
+      "nextseq_p1_2x300": {
+        "label": "NextSeq 2000 P1 \u2014 2 x 300bp",
+        "pricing": "flat",
+        "ru_user": 2575,
+        "external_academic": 3219,
+        "reads_millions": 100,
+        "read_config": "2x300"
+      },
+      "plasmidsaurus_custom": {
+        "label": "Plasmidsaurus Custom Sequencing (per batch, by Gb)",
+        "pricing": "custom_gb",
+        "base_price_first_gb": 500,
+        "price_per_additional_gb": 50,
+        "price_per_sample": 50,
+        "currency": "USD",
+        "_formula": "$500 for the first Gb + $50 per additional Gb + $50 per multiplexed sample, charged per shipped batch. Fewer, larger batches cost less."
+      }
+    },
+    "library_prep_per_plate": {
+      "_comment": "Consumables for one 96-well barcode plate, heavy chain (RT + 3 PCRs). QUANTITIES come from the protocol notes and are reliable. UNIT PRICES are list-price placeholders -- the vault contains no prices at all -- so treat the total as an order of magnitude until they are replaced with real purchase costs. Items marked NOT PRICED contribute nothing and are the biggest known gap.",
+      "_protocol_source": "Obsidian: Science and Programming/Postdoc/Protocols/Sequencing/MiSeq Bulk-SingleCell. Mastermixes scale at 110 reactions per 96-well plate.",
+      "_excluded": "Instrument time, staff time, TapeStation/qPCR library QC, gel purification columns, and failed plates.",
+      "consumables": [
+        {
+          "item": "SPRI beads",
+          "unit_cost": 0.083,
+          "units_per_plate": 1180,
+          "note": "11 uL/well x 96 x 1.05 for the RNA isolation, plus ~70 uL for the 0.7x pooled cleanup. Price is AMPure XP list per uL; if beads are made in-house this is roughly 15x too high."
+        },
+        {
+          "item": "NEB Taq M0273",
+          "unit_cost": 0.62,
+          "units_per_plate": 33,
+          "note": "0.1 uL per 20 uL reaction x 110 reactions x 3 PCR rounds (heavy chain). Kappa is 4 rounds; add ~11 uL."
+        },
+        {
+          "item": "dNTP mix",
+          "unit_cost": 0.1,
+          "units_per_plate": 132,
+          "note": "0.4 uL per reaction x 110 x 3 rounds."
+        },
+        {
+          "item": "10x Standard Taq buffer",
+          "unit_cost": 0.02,
+          "units_per_plate": 660,
+          "note": "2 uL per reaction x 110 x 3 rounds. Usually supplied with the enzyme."
+        },
+        {
+          "item": "Maxima H-RT + RNase inhibitor",
+          "unit_cost": 1.2,
+          "units_per_plate": 11,
+          "note": "0.1 uL per 10 uL RT reaction x 110."
+        },
+        {
+          "item": "Barcoded primer plate (amortised)",
+          "unit_cost": 0.0,
+          "units_per_plate": 1,
+          "note": "NOT PRICED. One IDT barcode plate prep -- 96 forward LVH at 100 uM plus 64 reverse -- yields ~1000 uL per well and serves about 100 reaction plates, so the per-plate share is small but real. Fill in from the IDT invoice divided by 100."
+        },
+        {
+          "item": "Gene-specific primers",
+          "unit_cost": 0.0,
+          "units_per_plate": 1,
+          "note": "NOT PRICED. 1.2-1.6 uL of pooled outer/inner primers per reaction across 3-4 rounds."
+        },
+        {
+          "item": "Filter tips, p10 (VWR)",
+          "unit_cost": 0.04,
+          "units_per_plate": 960,
+          "note": "384 for the RNA isolation and RT loading, from the tip block in the SPRI note; ~576 more estimated for 3 PCR rounds at two additions per well. PCR tip counts are NOT in the protocol."
+        },
+        {
+          "item": "Filter tips, p200 (VWR)",
+          "unit_cost": 0.05,
+          "units_per_plate": 408,
+          "note": "4.25 x 96, from the tip block in the SPRI RNA isolation note."
+        },
+        {
+          "item": "96-well PCR plates",
+          "unit_cost": 4.0,
+          "units_per_plate": 5,
+          "note": "One sorting plate plus one per PCR round."
+        },
+        {
+          "item": "Adhesive seals",
+          "unit_cost": 1.5,
+          "units_per_plate": 5,
+          "note": "One per plate handled. Brand and count not stated in the protocol."
+        },
+        {
+          "item": "Ethanol (80%) and water",
+          "unit_cost": 0.01,
+          "units_per_plate": 30,
+          "note": "80 uL x 96 wells x 3 washes x 1.2 overage = ~27.6 mL per plate, costed per mL."
+        },
+        {
+          "item": "Agarose gel QC",
+          "unit_cost": 6.0,
+          "units_per_plate": 1,
+          "note": "One 96-well comb gel per plate after the MSI round."
+        }
+      ]
+    },
+    "pooling": {
+      "_comment": "A flowcell is shared. Barcode plates carry an in-line plate barcode and all pool into one Illumina index, so the sequencing charge divides across the plates on the run -- which is what makes the per-plate figure fall as more plates are pooled. The lab's own records show 5, 9 and 15+15 plate pools; 9 is the middle of those and the default here.",
+      "plates_pooled_per_flowcell": 9,
+      "max_plates_per_flowcell": 16,
+      "assumed_plates_per_run": 1,
+      "_assumed_plates_note": "Used only for the all-runs total. The plate count on the form is optional metadata and most submissions will leave it at 1, so that total is a floor rather than a measurement.",
+      "sanger_per_reaction": 6.0,
+      "_sanger_note": "For the comparison line: what one Sanger read costs, so a 96-well plate can be priced against it. Set to the current core facility rate."
+    }
+  }
+}
