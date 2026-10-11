@@ -1,0 +1,912 @@
+#!/usr/bin/env python3
+"""tbrc -- run the TBRC pipeline from a terminal, without the Shiny app.
+
+    ./tbrc check                      is everything reachable and set up?
+    ./tbrc run   ...                  submit a run (to the HPC, or locally)
+    ./tbrc test                       does the workflow still build?
+    ./tbrc test --full --fastq-dir D  run a real dataset end to end and check the outputs
+
+Everything the app knows comes from frontend/server_config.json; this reads the
+same file, writes the same sample.json the app writes, and launches the backend
+through the same scripts, so a run started here is indistinguishable to the
+workflow from one started in the browser. Python 3.8+, standard library only.
+"""
+import argparse
+import datetime
+import glob
+import gzip
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+FRONTEND = os.path.join(ROOT, "frontend")
+BACKEND = os.path.join(ROOT, "backend")
+CONFIG_FILE = os.path.join(FRONTEND, "server_config.json")
+# Where run folders are staged before they ship. Same variable and default the
+# app uses, so the two never disagree about where a run's sample.json lives.
+RUNS_DIR = os.environ.get("TBRC_RUNS_DIR") or os.path.join(FRONTEND, "runs")
+
+PIPELINES = ("tiago_vsearch", "classic_luka", "tiago_sulkseq", "tiago_nanopore")
+PANELS = ("ig_all", "igh", "tra", "trb", "tcr_all", "all_receptors", "ig_b6", "ig_light")
+SPECIES = ("mouse", "human")
+LOCAL_TOOLS = ("snakemake", "cutadapt", "pandaseq", "fastx_trimmer", "vsearch", "igblastn", "Rscript")
+DOCKER_IMAGES = ("tbrc-backend:arm64", "tbrc-backend:full", "tbrc-backend:core")
+SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=12"]
+
+
+class Fail(Exception):
+    """A problem the user can act on. Printed as 'error: ...' plus a hint."""
+
+    def __init__(self, message, hint=""):
+        super().__init__(message)
+        self.hint = hint
+
+
+# ---------------------------------------------------------------- output
+def say(msg=""):
+    print(msg, flush=True)
+
+
+def status(level, label, detail="", hint=""):
+    tag = {"ok": "[ OK ]", "warn": "[WARN]", "fail": "[FAIL]", "skip": "[SKIP]"}[level]
+    say("{} {}{}".format(tag, label, ": " + detail if detail else ""))
+    if hint:
+        say("       -> " + hint)
+
+
+# ---------------------------------------------------------------- config
+def load_config():
+    if not os.path.exists(CONFIG_FILE):
+        raise Fail("no server configuration at {}".format(CONFIG_FILE),
+                   "copy the deployed server_config.json into frontend/, or run from a checkout that has one.")
+    try:
+        with open(CONFIG_FILE) as handle:
+            return json.load(handle)
+    except ValueError as exc:
+        raise Fail("frontend/server_config.json is not valid JSON: {}".format(exc))
+
+
+def cluster_value(cfg, key, default=""):
+    value = (cfg.get("cluster") or {}).get(key)
+    if value is None or value == "":
+        return default
+    value = str(value)
+    # The config names the cluster hosts as the app's account sees them, which
+    # may carry no user. A terminal user whose local name differs needs one:
+    # TBRC_SSH_USER, or failing that the user the DTN entry already carries,
+    # since both hosts belong to the same cluster account.
+    if key in ("ssh_host", "dtn_host") and "@" not in value:
+        user = ssh_user(cfg)
+        if user:
+            value = "{}@{}".format(user, value)
+    return value
+
+
+def ssh_user(cfg):
+    user = os.environ.get("TBRC_SSH_USER", "").strip()
+    if user:
+        return user
+    for key in ("dtn_host", "ssh_host"):
+        raw = str((cfg.get("cluster") or {}).get(key) or "")
+        if "@" in raw:
+            return raw.split("@", 1)[0]
+    return ""
+
+
+def storage_entry(cfg, name):
+    """The storage server block, normalised the way frontend/scripts/common.sh does."""
+    servers = cfg.get("storage_server") or {}
+    entry = servers.get(name)
+    if entry is None:
+        raise Fail("storage server '{}' is not in server_config.json".format(name),
+                   "known servers: {}".format(", ".join(sorted(servers)) or "none"))
+    if isinstance(entry, str):
+        raw = entry
+        return {"rawdata_path": raw, "results_path": re.sub(r"rawdata/?$", "results/", raw),
+                "ssh_port": None, "transfer_mode": "push"}
+    out = dict(entry)
+    out.setdefault("transfer_mode", "push")
+    out.setdefault("ssh_port", None)
+    for key in ("rawdata_path", "results_path"):
+        if not out.get(key):
+            raise Fail("storage server '{}' has no {}".format(name, key))
+        if ":" not in out[key]:
+            raise Fail("storage server '{}' {} is not host:path: {}".format(name, key, out[key]))
+    return out
+
+
+def barcode_default(cfg, primer_set, field):
+    entry = (cfg.get("barcode_defaults") or {}).get(primer_set) or {}
+    value = entry.get(field)
+    return str(value) if value else None
+
+
+def validate_segment(value, label):
+    if not value:
+        raise Fail("{} cannot be empty".format(label))
+    if not SEGMENT_RE.match(value) or value in (".", "..") or value.startswith("-"):
+        raise Fail("{} may only contain letters, numbers, dot, underscore and hyphen: {!r}".format(label, value),
+                   "it becomes a folder name on three machines and part of a remote command.")
+    return value
+
+
+# ---------------------------------------------------------------- shell
+def run(cmd, cwd=None, env=None, stream=False, timeout=None, log=None):
+    """Run a command. stream=True copies output to the terminal (and to log) as it arrives."""
+    if stream:
+        proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+        lines = []
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            lines.append(line)
+            if log:
+                log.write(line)
+                log.flush()
+        proc.wait()
+        return proc.returncode, "".join(lines), ""
+    try:
+        proc = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, "", "timed out after {}s".format(timeout)
+    except OSError as exc:
+        return 127, "", str(exc)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def ssh(host, command, port=None, timeout=60, stream=False, log=None):
+    cmd = ["ssh"] + SSH_OPTS
+    if port:
+        cmd += ["-p", str(port)]
+    cmd += [host, command]
+    return run(cmd, stream=stream, timeout=None if stream else timeout, log=log)
+
+
+def ssh_hint(host):
+    return ("check `ssh {0}` by hand. This tool uses BatchMode, so the key must be loaded "
+            "or configured in ~/.ssh/config; a password prompt counts as unreachable.".format(host))
+
+
+def which(tool):
+    return shutil.which(tool) is not None
+
+
+def docker_image():
+    if not which("docker"):
+        return None
+    rc, out, _ = run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"], timeout=30)
+    if rc != 0:
+        return None
+    have = set(out.split())
+    for image in DOCKER_IMAGES:
+        if image in have:
+            return image
+    return None
+
+
+# ---------------------------------------------------------------- sample.json
+def build_sample(cfg, a, run_name, storage=None, server_name=""):
+    """The row the app writes. Field names are sample.json COLUMN names and the
+    Snakefile reads every one of them positionally, so nothing here is optional
+    unless the Snakefile already tolerates its absence."""
+    def flag(value):
+        return "TRUE" if value else "FALSE"
+
+    trim_seq = a.trim_seq or barcode_default(cfg, a.primer_set, "trim_seq") or ""
+    if a.trim_primers and not trim_seq and a.pipeline != "tiago_nanopore":
+        raise Fail("no trim sequence for barcode set '{}'".format(a.primer_set),
+                   "pass --trim-seq, or --no-trim-primers, or add the set to barcode_defaults in server_config.json.")
+    source = "{}/{}".format(a.user, run_name)
+    sample = {
+        "user_id": a.user,
+        "user_email": a.email or "",
+        "sample_name": run_name,
+        "input_method": "Server" if storage else "Upload",
+        "server_name": server_name or "",
+        "server_path": storage["rawdata_path"] if storage else "",
+        "server_results_path": storage["results_path"] if storage else "",
+        "server_ssh_port": storage["ssh_port"] if storage else "",
+        "server_transfer_mode": a.transfer_mode,
+        "primer_set": a.primer_set,
+        "trim_primers": flag(a.trim_primers),
+        # head -n counts lines and a FASTA record is two, so the form doubles it.
+        "sequence_number": int(a.contigs) * 2,
+        "pipeline": a.pipeline,
+        "luka_light_protocol": a.protocol,
+        "run_igblast": flag(a.igblast),
+        "run_clonality": flag(a.clonality),
+        "archive_format": a.archive_format,
+        "igblast_species": a.species,
+        "igblast_panel": a.panel,
+        "mibs_junction_max_distance": a.mibs_junction_max_distance,
+        "mibs_gene_grouping": a.mibs_gene_grouping,
+        "mibs_clone_scope": a.mibs_clone_scope,
+        "mibs_min_reads_per_well": a.mibs_min_reads_per_well,
+        "mibs_min_wells_per_clone": a.mibs_min_wells_per_clone,
+        "mibs_productive_only": bool(a.mibs_productive_only),
+        "mibs_min_reads_per_cluster": a.mibs_min_reads_per_cluster,
+        "platemap_attached": bool(a.pipeline == "tiago_sulkseq" and a.platemap),
+        "sequencing_kit": a.sequencing_kit or "",
+        "receptor_check": a.receptor_check,
+        "igblast_bin": cluster_value(cfg, "igblast_bin", "igblastn"),
+        "igblast_organism": a.species,
+        "igblast_db_v": cluster_value(cfg, "igblast_db_v") or None,
+        "igblast_db_d": cluster_value(cfg, "igblast_db_d") or None,
+        "igblast_db_j": cluster_value(cfg, "igblast_db_j") or None,
+        # The cluster's paths mean nothing on another machine. For a local run
+        # leave both unset and run_igblast.sh resolves backend/igblast/
+        # internal_data and optional_file/<species>_gl.aux relative to itself,
+        # inside or outside a container.
+        "igblast_data": (None if getattr(a, "local", False) else cluster_value(cfg, "igblast_data") or None),
+        "igblast_auxiliary_data": (None if getattr(a, "local", False) else cluster_value(cfg, "igblast_auxiliary_data") or None),
+        "trim_seq": trim_seq,
+        "keep_raw": flag(a.keep_raw),
+        "archive_scope": a.archive_scope,
+        "source": source,
+        "dest": "results/" + source,
+    }
+    return sample
+
+
+def snakefile_columns():
+    """Every sample.json column the workflow indexes by name, from the source."""
+    cols = set()
+    for path in [os.path.join(BACKEND, "workflow", "Snakefile")] + glob.glob(os.path.join(BACKEND, "workflow", "rules", "*.smk")):
+        with open(path) as handle:
+            for line in handle:
+                code = line.split("#", 1)[0]
+                # Columns read unconditionally. A guarded read
+                # ("if 'x' in samples_df.columns") tolerates absence by design.
+                if "in samples_df.columns" in code:
+                    continue
+                cols.update(re.findall(r"samples_df\['([a-z_]+)'\]", code))
+    return cols
+
+
+def write_sample(run_dir, sample):
+    os.makedirs(run_dir, exist_ok=True)
+    path = os.path.join(run_dir, "sample.json")
+    with open(path, "w") as handle:
+        json.dump(sample, handle, indent=2)
+        handle.write("\n")
+    return path
+
+
+# ---------------------------------------------------------------- check
+def cmd_check(a):
+    cfg = load_config()
+    fails = 0
+
+    def report(level, *rest):
+        nonlocal fails
+        if level == "fail":
+            fails += 1
+        status(level, *rest)
+
+    say("== configuration ({})".format(os.path.relpath(CONFIG_FILE, ROOT)))
+    for key in ("ssh_host", "pipeline_root", "snakemake_env", "path_prefix"):
+        value = cluster_value(cfg, key)
+        report("ok" if value else "fail", "cluster." + key, value or "missing",
+               "" if value else "the frontend launcher cannot dispatch without it.")
+    dtn = cluster_value(cfg, "dtn_host")
+    report("ok" if dtn else "warn", "cluster.dtn_host", dtn or "not set",
+           "" if dtn else "server-mode runs pull raw data through the DTN; without one only --fastq-dir works.")
+
+    if a.local or a.all:
+        say("== this machine (for --local runs)")
+        report("ok" if os.path.isdir(BACKEND) else "fail", "backend/ present", BACKEND)
+        missing = [t for t in LOCAL_TOOLS if not which(t)]
+        image = docker_image()
+        if not missing:
+            report("ok", "pipeline tools on PATH", ", ".join(LOCAL_TOOLS))
+        elif image:
+            report("ok", "pipeline tools", "not on PATH, but Docker image {} is available".format(image))
+        else:
+            report("fail", "pipeline tools", "missing: " + ", ".join(missing),
+                   "conda env create -f environment.yml && conda activate snakemake, or build the backend Docker image from the README")
+        if which("docker") and not image:
+            report("warn", "docker", "installed, but no tbrc-backend image", "see the README")
+        igb = os.path.join(BACKEND, "igblast")
+        have_internal = os.path.isdir(os.path.join(igb, "internal_data"))
+        report("ok" if have_internal else "warn", "IgBLAST internal_data in backend/igblast",
+               "" if have_internal else "missing: annotation will be skipped on a local run",
+               "" if have_internal else "copy internal_data/ from the NCBI IgBLAST distribution (or the conda "
+               "package's share/igblast/) into backend/igblast/; see backend/igblast_setup.md")
+        for sp in ("mouse", "human"):
+            built = bool(glob.glob(os.path.join(igb, "work", sp, "ig_all", "*_V.nhr")))
+            report("ok" if built else "warn", "IgBLAST {} ig_all panel built locally".format(sp),
+                   "" if built else "not built: annotation will be skipped on a local run",
+                   "" if built else "cd backend/igblast && ./setup_igblast_databases.sh {} ig_all "
+                   "(inside the Docker image if the tools are not on PATH)".format(sp))
+
+    if not a.local:
+        ssh_host = cluster_value(cfg, "ssh_host")
+        root = cluster_value(cfg, "pipeline_root")
+        env_name = cluster_value(cfg, "snakemake_env")
+        prefix = cluster_value(cfg, "path_prefix")
+        say("== HPC ({})".format(ssh_host or "unset"))
+        if dtn:
+            rc, _, err = ssh(dtn, "true", timeout=20)
+            report("ok" if rc == 0 else "fail", "data-transfer node reachable", dtn if rc == 0 else err.strip()[-200:],
+                   "" if rc == 0 else ssh_hint(dtn))
+        if ssh_host:
+            rc, _, err = ssh(ssh_host, "true", timeout=20)
+            report("ok" if rc == 0 else "fail", "login node reachable", ssh_host if rc == 0 else err.strip()[-200:],
+                   "" if rc == 0 else ssh_hint(ssh_host) + (" If your cluster user differs from your local one, set "
+                                                          "TBRC_SSH_USER=<cluster user>." if "@" not in ssh_host else ""))
+            if rc == 0:
+                probe = (
+                    "cd {root} 2>/dev/null && echo ROOT=ok || echo ROOT=missing; "
+                    "test -x {root}/snakemake.sh && echo DRIVER=ok || echo DRIVER=missing; "
+                    "export PATH={prefix}:$PATH; "
+                    "conda activate {env} 2>/dev/null && echo ENV=ok || echo ENV=missing; "
+                    "command -v snakemake >/dev/null && echo SNAKEMAKE=$(snakemake --version 2>/dev/null | head -1) || echo SNAKEMAKE=missing; "
+                    "for t in cutadapt pandaseq fastx_trimmer vsearch igblastn Rscript; do command -v $t >/dev/null && echo TOOL_$t=ok || echo TOOL_$t=missing; done; "
+                    "python3 -c 'import pandas' 2>/dev/null && echo PANDAS=ok || echo PANDAS=missing; "
+                    "for sp in mouse human; do ls {root}/igblast/work/$sp/ig_all/*_V.nhr >/dev/null 2>&1 && echo PANEL_$sp=ok || echo PANEL_$sp=missing; done; "
+                    "p={root}/.snakemake/tbrc-driver.pid; if [ -f $p ] && kill -0 $(cat $p) 2>/dev/null; then echo ACTIVE=$(cat $p); else echo ACTIVE=none; fi; "
+                    "echo FREE_KB=$(df -Pk {root} 2>/dev/null | awk 'NR==2{{print $4}}'); "
+                    "sinfo -h -o '%P %a' 2>/dev/null | head -1 | sed 's/^/PARTITION=/'"
+                ).format(root=shlex.quote(root), prefix=shlex.quote(prefix), env=shlex.quote(env_name))
+                rc, out, err = ssh(ssh_host, probe, timeout=90)
+                facts = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+                report("ok" if facts.get("ROOT") == "ok" else "fail", "pipeline root", root,
+                       "" if facts.get("ROOT") == "ok" else "cluster.pipeline_root does not exist on the login node.")
+                report("ok" if facts.get("DRIVER") == "ok" else "fail", "snakemake.sh present and executable")
+                report("ok" if facts.get("ENV") == "ok" else "fail", "conda env '{}'".format(env_name),
+                       "" if facts.get("ENV") == "ok" else "", "" if facts.get("ENV") == "ok" else
+                       "conda env create -f environment.yml on the cluster, or fix cluster.snakemake_env / path_prefix.")
+                sm = facts.get("SNAKEMAKE", "missing")
+                report("ok" if sm != "missing" else "fail", "snakemake", sm)
+                tools_missing = [k[5:] for k, v in facts.items() if k.startswith("TOOL_") and v != "ok"]
+                report("ok" if not tools_missing else "fail", "pipeline tools",
+                       "all present" if not tools_missing else "missing: " + ", ".join(tools_missing))
+                report("ok" if facts.get("PANDAS") == "ok" else "fail", "python pandas (Snakefile needs it)")
+                for sp in ("mouse", "human"):
+                    ok = facts.get("PANEL_" + sp) == "ok"
+                    report("ok" if ok else "warn", "IgBLAST {} ig_all panel built".format(sp),
+                           "" if ok else "not built", "" if ok else
+                           "cd {}/igblast && ./setup_igblast_databases.sh {} ig_all".format(root, sp))
+                active = facts.get("ACTIVE", "none")
+                report("ok" if active == "none" else "warn", "another run active on the cluster",
+                       "no" if active == "none" else "yes, driver pid " + active,
+                       "" if active == "none" else "snakemake.sh refuses a second concurrent driver; wait for it.")
+                try:
+                    free_gb = int(facts.get("FREE_KB", "0")) / 1024 / 1024
+                    report("ok" if free_gb > 20 else "warn", "free space under pipeline root", "{:.0f} GB".format(free_gb))
+                except ValueError:
+                    report("warn", "free space under pipeline root", "unknown")
+                if "PARTITION" in facts:
+                    report("ok", "SLURM partition", facts["PARTITION"])
+                elif rc == 0:
+                    report("warn", "SLURM", "sinfo not available on the login node")
+
+        say("== storage servers")
+        servers = cfg.get("storage_server") or {}
+        names = [a.server] if a.server else sorted(servers)
+        for name in names:
+            try:
+                entry = storage_entry(cfg, name)
+            except Fail as exc:
+                report("fail", name, str(exc))
+                continue
+            host, raw_path = entry["rawdata_path"].split(":", 1)
+            _, res_path = entry["results_path"].split(":", 1)
+            port = entry.get("ssh_port")
+            check = "test -d {} && echo RAW=ok || echo RAW=missing; test -d {} && echo RES=ok || echo RES=missing".format(
+                shlex.quote(raw_path), shlex.quote(res_path))
+            rc, out, err = ssh(host, check, port=port, timeout=25)
+            route = "direct"
+            if rc != 0 and dtn:
+                inner = "ssh {} {} {}".format("-p {}".format(port) if port else "", shlex.quote(host), shlex.quote(check))
+                rc, out, err = ssh(dtn, inner, timeout=40)
+                route = "via " + dtn
+            if rc != 0:
+                report("fail", name, "unreachable ({})".format(err.strip()[-160:] or "no route"),
+                       "the app reaches it either directly or through the DTN; neither worked. " + ssh_hint(host))
+                continue
+            facts = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+            report("ok", name + " reachable", route)
+            report("ok" if facts.get("RAW") == "ok" else "fail", name + " rawdata_path", raw_path)
+            report("ok" if facts.get("RES") == "ok" else "fail", name + " results_path", res_path)
+            report("ok", name + " transfer mode", entry.get("transfer_mode", "push"))
+
+    say()
+    if fails:
+        say("{} check(s) failed.".format(fails))
+        return 1
+    say("All checks passed.")
+    return 0
+
+
+# ---------------------------------------------------------------- run
+def stage_fastqs(a, run_dir):
+    """Copy the pair into the run folder with names the Snakefile can pair up."""
+    if a.fastq_dir:
+        files = sorted(glob.glob(os.path.join(a.fastq_dir, "*.fastq.gz")) + glob.glob(os.path.join(a.fastq_dir, "*.fastq")))
+        if not files:
+            raise Fail("no .fastq or .fastq.gz files in {}".format(a.fastq_dir))
+        if a.pipeline != "tiago_nanopore" and len(files) != 2:
+            raise Fail("expected exactly one R1 and one R2 FASTQ in {}, found {}".format(a.fastq_dir, len(files)),
+                       "point --fastq-dir at a folder holding only the pair, or pass --r1 and --r2.")
+    else:
+        files = [a.r1, a.r2] if a.r2 else [a.r1]
+    for path in files:
+        if not os.path.isfile(path):
+            raise Fail("FASTQ not found: {}".format(path))
+        name = os.path.basename(path)
+        if not re.match(r"^[A-Za-z0-9._-]+$", name) or not re.search(r"\.(fastq|fq)(\.gz)?$", name):
+            raise Fail("FASTQ name is not acceptable: {}".format(name),
+                       "letters, numbers, dot, underscore, hyphen only, ending in .fastq(.gz).")
+    if a.pipeline != "tiago_nanopore":
+        tags = ["R1" if re.search(r"(^|[_.-])R1([_.-]|$)", os.path.basename(f)) else
+                "R2" if re.search(r"(^|[_.-])R2([_.-]|$)", os.path.basename(f)) else "?" for f in files]
+        if sorted(tags) != ["R1", "R2"]:
+            raise Fail("could not tell R1 from R2 by filename: {}".format(", ".join(os.path.basename(f) for f in files)),
+                       "the Snakefile pairs files by an _R1_ / _R2_ token in the name.")
+    os.makedirs(run_dir, exist_ok=True)
+    for path in files:
+        target = os.path.join(run_dir, os.path.basename(path))
+        if os.path.abspath(path) != os.path.abspath(target):
+            shutil.copy2(path, target)
+    return [os.path.basename(f) for f in files]
+
+
+def local_runner(a):
+    """How to invoke snakemake on this machine: natively, or inside the Docker image."""
+    if which("snakemake"):
+        return "native", None
+    image = a.docker_image or docker_image()
+    if image:
+        return "docker", image
+    raise Fail("no way to run the workflow on this machine: snakemake is not on PATH and no tbrc-backend Docker image exists",
+               "conda env create -f environment.yml && conda activate snakemake, or build the backend Docker image, or drop --local to run on the HPC.")
+
+
+def cmd_run(a):
+    cfg = load_config()
+    validate_segment(a.user, "user")
+    if a.folder and not a.run_name:
+        # goServer.bash pulls the folder to data/runs/<user>/<basename> and
+        # reads sample.json from data/runs/<user>/<run name>: the two are the
+        # same directory only when the names agree. The app derives one from
+        # the other; so does this.
+        a.run_name = os.path.basename(a.folder.strip().strip("/"))
+    if a.folder and a.run_name != os.path.basename(a.folder.strip().strip("/")):
+        raise Fail("in server mode the run name must be the folder's last component ({})".format(
+            os.path.basename(a.folder.strip().strip("/"))),
+            "the launcher lands the raw data under that name; drop --run-name and it is derived.")
+    if not a.run_name:
+        raise Fail("--run-name is required")
+    run_name = validate_segment(a.run_name, "run name")
+    if a.pipeline not in PIPELINES:
+        raise Fail("unknown pipeline {!r}".format(a.pipeline), "one of " + ", ".join(PIPELINES))
+    if a.panel not in PANELS:
+        raise Fail("unknown IgBLAST panel {!r}".format(a.panel), "one of " + ", ".join(PANELS))
+    if a.species not in SPECIES:
+        raise Fail("unknown species {!r}".format(a.species), "one of " + ", ".join(SPECIES))
+    if a.clonality and not a.igblast:
+        raise Fail("--clonality needs the IgBLAST annotation it reads", "drop --no-igblast.")
+    if a.platemap and a.pipeline != "tiago_sulkseq":
+        raise Fail("--platemap is only read by tiago_sulkseq")
+    if a.platemap and not os.path.isfile(a.platemap):
+        raise Fail("platemap not found: {}".format(a.platemap))
+
+    has_server = bool(a.server or a.folder)
+    has_files = bool(a.fastq_dir or a.r1)
+    if has_server == has_files:
+        raise Fail("choose one input: --server NAME --folder FOLDER (raw data on a storage server) "
+                   "or --fastq-dir DIR / --r1 --r2 (files on this machine)")
+    if has_server and not (a.server and a.folder):
+        raise Fail("--server and --folder go together")
+    if a.r1 and not a.r2 and a.pipeline != "tiago_nanopore":
+        raise Fail("--r1 needs --r2 for a paired-end pipeline")
+
+    storage = storage_entry(cfg, a.server) if has_server else None
+    if has_server:
+        a.folder = a.folder.strip().strip("/")
+        if "/" in a.folder:
+            raise Fail("--folder is one folder name directly under the server's rawdata_path, not a path: {!r}".format(a.folder),
+                       "the launcher rejects slashes; the raw data must sit at <rawdata_path>/<folder>/.")
+        validate_segment(a.folder, "folder")
+    if a.local and a.transfer_mode == "push" and not a.push:
+        # A local run has no business pushing to the NAS unless asked.
+        a.transfer_mode = "pull"
+    if not has_server and not a.push:
+        a.transfer_mode = "pull"
+
+    sample = build_sample(cfg, a, run_name, storage, a.server or "")
+    run_dir = os.path.join(BACKEND, "data", "runs", a.user, run_name) if a.local \
+        else os.path.join(RUNS_DIR, a.user, run_name)
+    if os.path.isdir(run_dir) and os.listdir(run_dir) and not a.force:
+        raise Fail("run folder already exists: {}".format(run_dir),
+                   "pick another --run-name, or pass --force to reuse it.")
+
+    if a.dry_run:
+        say("sample.json that would be written to {}:".format(run_dir))
+        say(json.dumps(sample, indent=2))
+
+    # ------------------------------------------------ local
+    if a.local:
+        mode, image = local_runner(a)
+        if has_server:
+            host, base = storage["rawdata_path"].split(":", 1)
+            src = "{}:{}/{}/".format(host, base.rstrip("/"), a.folder)
+            rsync = ["rsync", "-a", "--exclude=@eaDir/", "--exclude=@eaDir"]
+            if storage.get("ssh_port"):
+                rsync += ["-e", "ssh -p {} -o BatchMode=yes".format(storage["ssh_port"])]
+            rsync += [src, run_dir + "/"]
+            if a.dry_run:
+                say("would run: " + " ".join(shlex.quote(x) for x in rsync))
+            else:
+                rc, _, err = ssh(host, "true", port=storage.get("ssh_port"), timeout=20)
+                if rc != 0:
+                    raise Fail("storage server {} is not reachable from this machine".format(host),
+                               "a local run needs to pull the raw data itself. " + ssh_hint(host) +
+                               " Or drop --local and let the DTN pull it on the cluster.")
+                os.makedirs(run_dir, exist_ok=True)
+                say("Pulling {} from {} ...".format(a.folder, a.server))
+                rc, out, err = run(rsync, stream=True)
+                if rc != 0:
+                    raise Fail("rsync from the storage server failed (exit {})".format(rc))
+        else:
+            if not a.dry_run:
+                stage_fastqs(a, run_dir)
+        if a.platemap and not a.dry_run:
+            shutil.copy2(a.platemap, os.path.join(run_dir, "platemap.tsv"))
+
+        rel_table = os.path.relpath(os.path.join(run_dir, "sample.json"), BACKEND)
+        rel_input = os.path.relpath(run_dir, BACKEND) + "/"
+        snake = ["snakemake", "--cores", str(a.cores), "--rerun-incomplete"]
+        if a.dry_run:
+            snake.append("-n")
+        if mode == "native":
+            cmd = snake
+            env = dict(os.environ, DATA_TABLE=rel_table, INPUTPATH=rel_input)
+        else:
+            cmd = ["docker", "run", "--rm", "-v", "{}:/work".format(BACKEND), "-w", "/work",
+                   "-e", "DATA_TABLE=" + rel_table, "-e", "INPUTPATH=" + rel_input, image] + snake
+            env = None
+        if a.dry_run and not a.plan:
+            say("would run in {}: {}".format(BACKEND, " ".join(shlex.quote(x) for x in cmd)))
+            return 0
+        if a.dry_run:
+            write_sample(run_dir, sample)
+            if not has_server:
+                stage_fastqs(a, run_dir)
+        else:
+            write_sample(run_dir, sample)
+        say("Running the workflow {} ({})...".format("locally" if mode == "native" else "in " + image,
+                                                     "plan only" if a.dry_run else "for real"))
+        with open(os.path.join(run_dir, "backend.log"), "a") as log:
+            rc, out, _ = run(cmd, cwd=BACKEND, env=env, stream=True, log=log)
+        if rc != 0:
+            raise Fail("the workflow exited with status {}".format(rc),
+                       "the full log is in {}/backend.log; rule logs are under backend/logs/.".format(run_dir))
+        if not a.dry_run:
+            if not report_outputs(os.path.join(BACKEND, sample["dest"], run_name), run_name, sample):
+                raise Fail("the workflow finished but not every expected output is there",
+                           "see qc/annotation/status.tsv in the results folder for what was skipped and why.")
+        return 0
+
+    # ------------------------------------------------ HPC
+    ssh_host = cluster_value(cfg, "ssh_host")
+    dtn = cluster_value(cfg, "dtn_host")
+    root = cluster_value(cfg, "pipeline_root")
+    env_name = cluster_value(cfg, "snakemake_env")
+    prefix = cluster_value(cfg, "path_prefix")
+    for key, value in (("ssh_host", ssh_host), ("pipeline_root", root), ("snakemake_env", env_name)):
+        if not value:
+            raise Fail("cluster.{} is not set in server_config.json".format(key))
+    if has_server and not dtn:
+        raise Fail("cluster.dtn_host is not set; a server-mode run pulls raw data through it",
+                   "set it, or use --fastq-dir.")
+    if a.dry_run:
+        say("would stage {} and dispatch on {} via {}".format(run_dir, ssh_host, "goServer.bash" if has_server else "rsync + ssh"))
+        return 0
+
+    write_sample(run_dir, sample)
+    if a.platemap:
+        shutil.copy2(a.platemap, os.path.join(run_dir, "platemap.tsv"))
+    log_path = os.path.join(run_dir, "backend.log")
+    started = time.time()
+    with open(log_path, "a") as log:
+        if has_server:
+            script = os.path.join(FRONTEND, "scripts", "goServer.bash")
+            cmd = ["bash", script, "-u", a.user, "-s", a.server, "-f", a.folder, "-n", run_name]
+            env = dict(os.environ, TBRC_RUNS_DIR=RUNS_DIR)
+            if ssh_user(cfg):
+                env["TBRC_SSH_USER"] = ssh_user(cfg)
+            say("Dispatching {} on {} (raw data {}:{}) ...".format(run_name, ssh_host, a.server, a.folder))
+            rc, out, _ = run(cmd, cwd=FRONTEND, env=env, stream=True, log=log)
+        else:
+            names = stage_fastqs(a, run_dir)
+            remote_run = "{}/data/runs/{}/{}/".format(root.rstrip("/"), a.user, run_name)
+            say("Copying {} to {} ...".format(", ".join(names), dtn or ssh_host))
+            rc, out, err = run(["ssh"] + SSH_OPTS + [dtn or ssh_host, "mkdir -p " + shlex.quote(remote_run)], timeout=60)
+            if rc != 0:
+                raise Fail("could not create {} on {}".format(remote_run, dtn or ssh_host), ssh_hint(dtn or ssh_host))
+            rc, out, _ = run(["rsync", "-a", "-P", "-e", "ssh " + " ".join(SSH_OPTS), run_dir + "/",
+                              "{}:{}".format(dtn or ssh_host, remote_run)], stream=True, log=log)
+            if rc != 0:
+                raise Fail("rsync to the cluster failed (exit {})".format(rc))
+            table = "data/runs/{}/{}/sample.json".format(a.user, run_name)
+            inputs = "data/runs/{}/{}/".format(a.user, run_name)
+            remote = ("cd {root} && export PATH={prefix} && export DATA_TABLE={table} && export INPUTPATH={inputs} "
+                      "&& conda activate {env} && ./snakemake.sh").format(
+                root=shlex.quote(root), prefix=shlex.quote(prefix), table=shlex.quote(table),
+                inputs=shlex.quote(inputs), env=shlex.quote(env_name))
+            say("Dispatching {} on {} ...".format(run_name, ssh_host))
+            rc, out, _ = ssh(ssh_host, remote, stream=True, log=log)
+    elapsed = int(time.time() - started)
+    if rc != 0:
+        raise Fail("the run failed after {}s (exit {})".format(elapsed, rc),
+                   summarise_failure(out) + " Full output: {}".format(log_path))
+    say("Run {} finished in {}s. Results on the cluster under {}/{}/{}; archive {}.".format(
+        run_name, elapsed, root, sample["dest"], run_name,
+        "pushed to " + sample["server_results_path"] if sample["server_transfer_mode"] == "push"
+        else "left there (transfer mode pull)"))
+    return 0
+
+
+def summarise_failure(output):
+    """The same translations the app makes, so a terminal user gets the same words."""
+    if "Folder not found on" in output:
+        return "The requested folder was not found on the storage server."
+    if "Not enough space on the cluster" in output:
+        return "The cluster does not have room for this run."
+    if "Another Snakemake run" in output:
+        return "Another run is active on the cluster; wait for it and resubmit."
+    if "Expected exactly one R1 and one R2" in output:
+        return "The input folder does not hold exactly one R1 and one R2 FASTQ."
+    if "Error in rule" in output:
+        m = re.search(r"Error in rule (\w+)", output)
+        return "Rule {} failed; see logs/<run>.{}.*.log on the cluster.".format(m.group(1), m.group(1)) if m else "A rule failed."
+    return "See the backend output above."
+
+
+def report_outputs(result_dir, run_name, sample):
+    say()
+    say("== outputs in {}".format(result_dir))
+    checks = [
+        ("IMGT-ready FASTA", os.path.join(result_dir, run_name + ".imgt.ready.fasta")),
+        ("archive", os.path.join(result_dir, "{}.{}".format(run_name, "zip" if sample["archive_format"] == "zip" else "tar.gz"))),
+        ("report", os.path.join(result_dir, run_name + ".report.html")),
+        ("annotation status", os.path.join(result_dir, "qc", "annotation", "status.tsv")),
+    ]
+    if sample["run_igblast"] == "TRUE":
+        checks.append(("IgBLAST table", os.path.join(result_dir, "igblast", run_name + ".igblast.tsv")))
+    ok = True
+    for label, path in checks:
+        present = os.path.isfile(path)
+        ok = ok and present
+        status("ok" if present else "fail", label, os.path.relpath(path, result_dir) if present else "missing")
+    return ok
+
+
+# ---------------------------------------------------------------- test
+def tiny_fastq(path, reads=4):
+    with gzip.open(path, "wt") as handle:
+        for i in range(reads):
+            handle.write("@tbrc_selftest_{}\n{}\n+\n{}\n".format(i, "ACGT" * 60, "I" * 240))
+
+
+def cmd_test(a):
+    cfg = load_config()
+    fails = 0
+
+    def report(level, *rest):
+        nonlocal fails
+        if level == "fail":
+            fails += 1
+        status(level, *rest)
+
+    say("== 1. sample.json carries every column the workflow reads")
+    needed = snakefile_columns()
+    fake = argparse.Namespace(**DEFAULTS, user="tbrc_test", email="", pipeline="tiago_vsearch",
+                              primer_set="B2", trim_seq="", platemap="", push=False)
+    for pipeline in PIPELINES:
+        fake.pipeline = pipeline
+        sample = build_sample(cfg, fake, "selftest")
+        missing = sorted(needed - set(sample))
+        report("ok" if not missing else "fail", pipeline, "all {} columns present".format(len(needed)) if not missing
+               else "missing " + ", ".join(missing))
+
+    say("== 2. the workflow plans a run from that sample.json (dry run, no data needed)")
+    pipelines = ["tiago_vsearch", "classic_luka"]
+    name = "_tbrc_selftest_{}".format(datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
+    where = "local" if (which("snakemake") or docker_image()) and not a.hpc else "hpc"
+    if where == "local":
+        mode, image = local_runner(argparse.Namespace(docker_image=None))
+        for pipeline in pipelines:
+            run_dir = os.path.join(BACKEND, "data", "runs", "tbrc_test", name + "_" + pipeline)
+            os.makedirs(run_dir, exist_ok=True)
+            tiny_fastq(os.path.join(run_dir, "selftest_S1_R1_001.fastq.gz"))
+            tiny_fastq(os.path.join(run_dir, "selftest_S1_R2_001.fastq.gz"))
+            fake.pipeline = pipeline
+            write_sample(run_dir, build_sample(cfg, fake, "selftest"))
+            table = os.path.relpath(os.path.join(run_dir, "sample.json"), BACKEND)
+            inputs = os.path.relpath(run_dir, BACKEND) + "/"
+            snake = ["snakemake", "-n", "--cores", "1"]
+            if mode == "native":
+                rc, out, err = run(snake, cwd=BACKEND, env=dict(os.environ, DATA_TABLE=table, INPUTPATH=inputs), timeout=300)
+            else:
+                rc, out, err = run(["docker", "run", "--rm", "-v", BACKEND + ":/work", "-w", "/work",
+                                    "-e", "DATA_TABLE=" + table, "-e", "INPUTPATH=" + inputs, image] + snake, timeout=600)
+            jobs = re.search(r"total\s+(\d+)", out + err)
+            report("ok" if rc == 0 else "fail", "{} plans ({})".format(pipeline, mode),
+                   "{} jobs".format(jobs.group(1)) if rc == 0 and jobs else (err or out).strip().splitlines()[-1:][0] if (err or out).strip() else "exit {}".format(rc))
+            shutil.rmtree(run_dir, ignore_errors=True)
+    else:
+        ssh_host = cluster_value(cfg, "ssh_host")
+        root = cluster_value(cfg, "pipeline_root")
+        prefix = cluster_value(cfg, "path_prefix")
+        env_name = cluster_value(cfg, "snakemake_env")
+        if not ssh_host:
+            report("fail", "dry run", "no snakemake here and no cluster.ssh_host to try")
+        else:
+            tmp = tempfile.mkdtemp(prefix="tbrc_selftest_")
+            try:
+                for pipeline in pipelines:
+                    local_dir = os.path.join(tmp, name + "_" + pipeline)
+                    os.makedirs(local_dir)
+                    tiny_fastq(os.path.join(local_dir, "selftest_S1_R1_001.fastq.gz"))
+                    tiny_fastq(os.path.join(local_dir, "selftest_S1_R2_001.fastq.gz"))
+                    fake.pipeline = pipeline
+                    write_sample(local_dir, build_sample(cfg, fake, "selftest"))
+                remote_dir = "{}/data/runs/tbrc_test/".format(root.rstrip("/"))
+                rc, out, err = run(["rsync", "-a", "-e", "ssh " + " ".join(SSH_OPTS), tmp + "/", ssh_host + ":" + remote_dir], timeout=120)
+                if rc != 0:
+                    report("fail", "copy self-test to the cluster", err.strip()[-200:], ssh_hint(ssh_host))
+                else:
+                    for pipeline in pipelines:
+                        rel = "data/runs/tbrc_test/{}_{}".format(name, pipeline)
+                        remote = ("cd {root} && export PATH={prefix}:$PATH && conda activate {env} && "
+                                  "DATA_TABLE={rel}/sample.json INPUTPATH={rel}/ snakemake -n --cores 1 2>&1 | tail -25").format(
+                            root=shlex.quote(root), prefix=shlex.quote(prefix), env=shlex.quote(env_name), rel=shlex.quote(rel))
+                        rc, out, err = ssh(ssh_host, remote, timeout=300)
+                        jobs = re.search(r"total\s+(\d+)", out)
+                        planned = jobs is not None and "Error" not in out
+                        report("ok" if planned else "fail", "{} plans (on {})".format(pipeline, ssh_host),
+                               "{} jobs".format(jobs.group(1)) if planned else out.strip().splitlines()[-1:][0] if out.strip() else "exit {}".format(rc))
+                    # Only the folders this test just created, by their timestamped name.
+                    ssh(ssh_host, "rm -rf {}".format(" ".join(shlex.quote(remote_dir + name + "_" + p) for p in pipelines)), timeout=60)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+
+    if a.full:
+        say("== 3. a real run on the dataset you gave")
+        if not (a.fastq_dir or a.r1):
+            report("fail", "full test", "needs --fastq-dir DIR (or --r1/--r2) with a real paired-end run")
+        else:
+            run_name = "tbrc_test_{}".format(datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
+            args = argparse.Namespace(**DEFAULTS, user="tbrc_test", email="", pipeline=a.pipeline,
+                                      primer_set=a.primer_set, trim_seq="", platemap="", push=False,
+                                      run_name=run_name, server="", folder="", fastq_dir=a.fastq_dir, r1=a.r1, r2=a.r2,
+                                      local=a.local, cores=a.cores, docker_image=None, dry_run=False, plan=False, force=False)
+            args.transfer_mode = "pull"
+            try:
+                rc = cmd_run(args)
+                report("ok" if rc == 0 else "fail", "real run " + run_name)
+            except Fail as exc:
+                report("fail", "real run " + run_name, str(exc), exc.hint)
+
+    say()
+    if fails:
+        say("{} test(s) failed.".format(fails))
+        return 1
+    say("All tests passed.")
+    return 0
+
+
+# ---------------------------------------------------------------- cli
+DEFAULTS = dict(
+    protocol="standard", contigs=3, igblast=True, clonality=False, species="mouse", panel="ig_all",
+    receptor_check="auto", archive_format="zip", archive_scope="light", keep_raw=False, trim_primers=True,
+    transfer_mode="push", sequencing_kit="",
+    mibs_junction_max_distance=4, mibs_gene_grouping="strict", mibs_clone_scope="sample",
+    mibs_min_reads_per_well=6, mibs_min_wells_per_clone=2, mibs_productive_only=False,
+    mibs_min_reads_per_cluster=2,
+)
+
+
+def add_run_options(p):
+    p.add_argument("--user", required=True, help="submitter id; becomes the results folder name")
+    p.add_argument("--run-name", default="", help="name of this run; becomes the sample name. In server mode it is the folder's last component and may be omitted")
+    p.add_argument("--email", default="", help="notification address (optional)")
+    src = p.add_argument_group("input (choose one)")
+    src.add_argument("--server", default="", help="storage server name from server_config.json")
+    src.add_argument("--folder", default="", help="folder under that server's rawdata_path holding the FASTQ pair")
+    src.add_argument("--fastq-dir", default="", help="local folder holding exactly one R1 and one R2 FASTQ")
+    src.add_argument("--r1", default="", help="local R1 FASTQ")
+    src.add_argument("--r2", default="", help="local R2 FASTQ")
+    lib = p.add_argument_group("library")
+    lib.add_argument("--primer-set", required=True, help="barcode set folder under backend/data/barcodes, e.g. B2 or T")
+    lib.add_argument("--pipeline", default="tiago_vsearch", choices=PIPELINES)
+    lib.add_argument("--protocol", default=DEFAULTS["protocol"], choices=("standard", "luka_light"),
+                     help="barcode preprocessing; luka_light strips the light-chain primer and tail during splitting")
+    lib.add_argument("--contigs", type=int, default=DEFAULTS["contigs"], help="sequences to keep per well (default 3)")
+    lib.add_argument("--trim-seq", default="", help="5' handle to trim at the end; default comes from barcode_defaults")
+    lib.add_argument("--no-trim-primers", dest="trim_primers", action="store_false", default=True)
+    ann = p.add_argument_group("annotation")
+    ann.add_argument("--no-igblast", dest="igblast", action="store_false", default=True)
+    ann.add_argument("--clonality", action="store_true", default=False)
+    ann.add_argument("--species", default=DEFAULTS["species"], choices=SPECIES)
+    ann.add_argument("--panel", default=DEFAULTS["panel"], choices=PANELS,
+                     help="germline panel; the receptor check widens a single-locus panel when the plate needs it")
+    ann.add_argument("--receptor-check", default=DEFAULTS["receptor_check"], choices=("auto", "warn", "off"))
+    out = p.add_argument_group("output")
+    out.add_argument("--archive-format", default=DEFAULTS["archive_format"], choices=("zip", "tar.gz"))
+    out.add_argument("--archive-scope", default=DEFAULTS["archive_scope"], choices=("light", "full"))
+    out.add_argument("--keep-raw", action="store_true", default=False, help="keep bulky intermediates on disk")
+    out.add_argument("--transfer-mode", default=DEFAULTS["transfer_mode"], choices=("push", "pull"),
+                     help="push the archive to the storage server, or leave it where it was made")
+    out.add_argument("--push", action="store_true", default=False,
+                     help="also push from a --local or --fastq-dir run (off by default for those)")
+    out.add_argument("--sequencing-kit", default="", help="recorded only")
+    mibs = p.add_argument_group("MIBS / tiago_sulkseq")
+    mibs.add_argument("--platemap", default="", help="experimental design TSV for a MIBS run")
+    for key in ("mibs_junction_max_distance", "mibs_min_reads_per_well", "mibs_min_wells_per_clone", "mibs_min_reads_per_cluster"):
+        mibs.add_argument("--" + key.replace("_", "-"), type=int, default=DEFAULTS[key])
+    mibs.add_argument("--mibs-gene-grouping", default=DEFAULTS["mibs_gene_grouping"], choices=("strict", "transitive"))
+    mibs.add_argument("--mibs-clone-scope", default=DEFAULTS["mibs_clone_scope"], choices=("sample", "global"))
+    mibs.add_argument("--mibs-productive-only", action="store_true", default=False)
+    where = p.add_argument_group("where to run")
+    where.add_argument("--local", action="store_true", help="run the workflow on this machine (snakemake on PATH, or a tbrc-backend Docker image)")
+    where.add_argument("--cores", type=int, default=4, help="cores for a --local run")
+    where.add_argument("--docker-image", default="", help="image to use for a --local run (default: first tbrc-backend image found)")
+    where.add_argument("--dry-run", action="store_true", help="write nothing on the cluster; show the sample.json and the commands")
+    where.add_argument("--plan", action="store_true", help="with --dry-run --local: stage the run and let snakemake plan it (-n)")
+    where.add_argument("--force", action="store_true", help="reuse an existing run folder")
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="tbrc", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="command", required=True)
+
+    c = sub.add_parser("check", help="verify configuration, HPC, storage servers and (with --local) this machine")
+    c.add_argument("--local", action="store_true", help="check only what a --local run needs")
+    c.add_argument("--all", action="store_true", help="check the HPC, the storage servers and this machine")
+    c.add_argument("--server", default="", help="check only this storage server")
+    c.set_defaults(func=cmd_check)
+
+    r = sub.add_parser("run", help="submit a run")
+    add_run_options(r)
+    r.set_defaults(func=cmd_run)
+
+    t = sub.add_parser("test", help="self-test: columns, workflow dry run, optionally a real run")
+    t.add_argument("--hpc", action="store_true", help="do the dry run on the cluster even if snakemake is available here")
+    t.add_argument("--full", action="store_true", help="also run a real dataset end to end")
+    t.add_argument("--fastq-dir", default="", help="dataset for --full")
+    t.add_argument("--r1", default="")
+    t.add_argument("--r2", default="")
+    t.add_argument("--primer-set", default="B2")
+    t.add_argument("--pipeline", default="tiago_vsearch", choices=PIPELINES)
+    t.add_argument("--local", action="store_true", help="run the --full test on this machine")
+    t.add_argument("--cores", type=int, default=4)
+    t.set_defaults(func=cmd_test)
+
+    a = ap.parse_args(argv)
+    try:
+        return a.func(a)
+    except Fail as exc:
+        say("error: {}".format(exc))
+        if exc.hint:
+            say("hint:  {}".format(exc.hint))
+        return 2
+    except KeyboardInterrupt:
+        say("\ninterrupted")
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
