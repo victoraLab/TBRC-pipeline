@@ -288,7 +288,7 @@ shinyUI(fluidPage(theme = shinytheme("flatly"),
         class = "hero-copy",
         tags$div(
           class = "hero-title",
-          "TBRCa Pipeline - T and B cell Receptor Clonality analysis"
+          "TBRC Pipeline - T and B cell Receptor Clonality analysis"
         ),
         tags$p(
           class = "hero-subtitle",

@@ -1,6 +1,6 @@
-# TBRCa Pipeline
+# TBRC Pipeline
 
-TBRCa is a Shiny plus Snakemake workflow for plate-based BCR/TCR assembly, QC, IGBlast annotation, optional clonality calling, and packaged result delivery.
+TBRC is a Shiny plus Snakemake workflow for plate-based BCR/TCR assembly, QC, IGBlast annotation, optional clonality calling, and packaged result delivery.
 
 The repository has two main components:
 
@@ -44,7 +44,7 @@ Typical packaged outputs include:
 
 ## Install Anywhere
 
-This is the shortest path to get TBRCa running on a new machine, cluster, or Shiny host.
+This is the shortest path to get TBRC running on a new machine, cluster, or Shiny host.
 
 ### 1. Clone the repository
 
@@ -109,7 +109,7 @@ R CMD INSTALL /path/to/clonality_0.10.tar.gz
 
 ### 4. Decide your deployment pattern
 
-TBRCa can be run in three common ways:
+TBRC can be run in three common ways:
 
 1. Local development:
 Shiny and Snakemake on the same machine.
