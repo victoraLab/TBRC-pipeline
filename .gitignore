@@ -1,1 +1,68 @@
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# R session / cache files
+.Rhistory
+.RData
+.Ruserdata
 .Rproj.user/
+
+# Python / general cache files
+__pycache__/
+*.pyc
+*.pyo
+
+# Workflow runtime state
+.snakemake/
+
+# Local run inputs and generated outputs
+frontend/runs/
+# Operational data carrying lab members' email addresses. Snapshotted alongside
+# the repo instead. This was lost when the local import was rebased onto the
+# published history, whose .gitignore predates it.
+frontend/run_stats.tsv
+frontend/notification_log.tsv
+frontend/errorlogs/
+backend/data/runs/
+backend/results/
+backend/logs/
+backend/slurm_outs/
+test results/
+
+# Generated barcode / temporary artifacts
+frontend/bc/*/
+!frontend/bc/bc_names.txt
+
+# Generated IGBlast build outputs
+backend/igblast/work/
+backend/igblast/internal_data/
+backend/igblast/bin/edit_imgt_file.pl
+backend/igblast/refs/*.gl.aux
+
+# Local archives and packaged deliverables
+*.zip
+*.tar.gz
+
+# Design source files
+*.ai
+
+# Local helper outputs
+/tmp/
+
+# Private local deployment config
+scripts/deploy_config.sh
+
+
+# site-specific settings: copy the *.example file and edit
+frontend/server_config.json
+scripts/deploy_config.sh
+backend/config/site.env
+
+__pycache__/
+*.pyc
+.Rhistory
+.DS_Store
