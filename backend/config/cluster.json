@@ -1,0 +1,68 @@
+{
+    "__default__": {
+        "cpus_per_task": "1",
+        "name": "{rule}",
+        "partition": "your_partition",
+        "time": "02:00:00",
+        "mem": "4G",
+        "output": "slurm_outs/{rule}.out",
+        "error": "slurm_outs/{rule}.err",
+        "mailto": "you@example.org",
+        "mailtype": "END,FAIL"
+    },
+    "demux_nanopore": {
+        "cpus_per_task": "2",
+        "mem": "8G",
+        "time": "04:00:00"
+    },
+    "consensus_nanopore": {
+        "cpus_per_task": "8",
+        "mem": "16G",
+        "time": "04:00:00"
+    },
+    "prep_reads_vsearch": {
+        "cpus_per_task": "4",
+        "mem": "8G",
+        "time": "06:00:00"
+    },
+    "merge_vsearch": {
+        "cpus_per_task": "4",
+        "mem": "16G",
+        "time": "12:00:00"
+    },
+    "demux_vsearch": {
+        "cpus_per_task": "2",
+        "mem": "16G",
+        "time": "12:00:00"
+    },
+    "wells_vsearch": {
+        "cpus_per_task": "8",
+        "mem": "24G",
+        "time": "12:00:00"
+    },
+    "rank_and_emit": {
+        "cpus_per_task": "1",
+        "mem": "8G",
+        "time": "04:00:00"
+    },
+    "rank_sulkseq": {
+        "cpus_per_task": "1",
+        "mem": "16G",
+        "time": "04:00:00"
+    },
+    "annotate_sulkseq": {
+        "cpus_per_task": "4",
+        "mem": "16G",
+        "time": "24:00:00"
+    },
+    "clones_sulkseq": {
+        "cpus_per_task": "1",
+        "mem": "32G",
+        "time": "08:00:00"
+    },
+    "final": {
+        "cpus_per_task": "2",
+        "mem": "16G",
+        "time": "12:00:00"
+    }
+}

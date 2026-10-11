@@ -1,0 +1,385 @@
+import pandas as pd
+import os
+import re
+import glob
+import json
+
+#Get PATH variable
+DATA_TABLE=os.environ.get("DATA_TABLE")
+FILE_PATH=os.path.dirname(DATA_TABLE)
+
+INPUTPATH=os.environ.get("INPUTPATH")
+fastq_files = sorted(
+    glob.glob(os.path.join(INPUTPATH, "*.fastq.gz")) +
+    glob.glob(os.path.join(INPUTPATH, "*.fastq"))
+)
+
+def classify_read(path):
+    basename = os.path.basename(path)
+    if re.search(r'(^|[_\.-])R1([_\.-]|$)', basename, re.IGNORECASE):
+        return "R1"
+    if re.search(r'(^|[_\.-])R2([_\.-]|$)', basename, re.IGNORECASE):
+        return "R2"
+    return None
+
+def _peek_pipeline(path):
+    """Read only the pipeline field from the samples table.
+
+    The R1/R2 requirement below depends on which pipeline was chosen, but the
+    table is not parsed until much further down. Rather than move that parsing
+    and disturb every existing pipeline, read the one field needed here."""
+    try:
+        if path and path.lower().endswith(".json"):
+            with open(path) as handle:
+                payload = json.load(handle)
+            value = payload.get("pipeline")
+            if isinstance(value, list):
+                value = value[0] if value else ""
+            return str(value or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+# Nanopore is single-end: one FASTQ, no mate. Every other pipeline is Illumina
+# paired-end and keeps the strict one-R1-one-R2 contract unchanged.
+SINGLE_END_PIPELINES = {"tiago_nanopore"}
+IS_SINGLE_END = _peek_pipeline(DATA_TABLE) in SINGLE_END_PIPELINES
+
+read1_matches = [path for path in fastq_files if classify_read(path) == "R1"]
+read2_matches = [path for path in fastq_files if classify_read(path) == "R2"]
+
+if IS_SINGLE_END:
+    if len(fastq_files) < 1:
+        raise ValueError(
+            "Expected at least one FASTQ in {} for a nanopore run. Found none.".format(INPUTPATH)
+        )
+    # Nanopore basecallers do not use the R1/R2 convention, so take the files as
+    # they come. READ2 is deliberately set to READ1 rather than None: the sample
+    # name derivation below is shared with the paired pipelines and expects two
+    # paths. Nothing in the nanopore rules reads READ2.
+    READ1_GZ = fastq_files[0]
+    READ2_GZ = READ1_GZ
+    NANOPORE_INPUTS = fastq_files
+else:
+    if len(read1_matches) != 1 or len(read2_matches) != 1:
+        raise ValueError(
+            "Expected exactly one R1 and one R2 FASTQ.gz file in {}. Found R1={}, R2={}.".format(
+                INPUTPATH, read1_matches, read2_matches
+            )
+        )
+
+    READ1_GZ = read1_matches[0]
+    READ2_GZ = read2_matches[0]
+    NANOPORE_INPUTS = []
+
+def sample_name_from_reads(read1_path, read2_path):
+    read1_name = os.path.basename(read1_path)
+    read2_name = os.path.basename(read2_path)
+
+    patterns = [
+        r'([_\.-])R1([_\.-]|$)',
+        r'([_\.-])R2([_\.-]|$)',
+        r'([_\.-])001([_\.-]|$)',
+        r'([_\.-])S\d+([_\.-]|$)',
+        r'([_\.-])L\d{3}([_\.-]|$)',
+    ]
+
+    base1 = re.sub(r'\.fastq(\.gz)?$', '', read1_name, flags=re.IGNORECASE)
+    base2 = re.sub(r'\.fastq(\.gz)?$', '', read2_name, flags=re.IGNORECASE)
+
+    for pattern in patterns:
+        base1 = re.sub(pattern, r'\1', base1, flags=re.IGNORECASE)
+        base2 = re.sub(pattern, r'\1', base2, flags=re.IGNORECASE)
+
+    base1 = re.sub(r'[_\.-]+$', '', base1)
+    base2 = re.sub(r'[_\.-]+$', '', base2)
+
+    if base1 != base2:
+        raise ValueError("Could not infer a common sample name from {} and {}.".format(read1_name, read2_name))
+
+    return base1
+
+#Variables
+def load_samples_table(path):
+    if path is None:
+        raise ValueError("DATA_TABLE is not set.")
+
+    if os.path.exists(path):
+        if path.lower().endswith(".json"):
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if isinstance(payload, dict):
+                return pd.DataFrame([payload])
+            if isinstance(payload, list):
+                return pd.DataFrame(payload)
+            raise ValueError("Unsupported JSON metadata structure in {}.".format(path))
+        return pd.read_table(path)
+
+    if path.lower().endswith(".json"):
+        legacy_path = re.sub(r"\.json$", ".tsv", path, flags=re.IGNORECASE)
+        if os.path.exists(legacy_path):
+            return pd.read_table(legacy_path)
+
+    raise FileNotFoundError("Metadata file not found: {}".format(path))
+
+samples_df = load_samples_table('{}'.format(DATA_TABLE))
+
+# The frontend now publishes the sample name it already derived. Prefer it, and
+# only fall back to re-deriving from filenames for sample.json files written
+# before that field existed.
+def resolve_sample_name(df, read1_path, read2_path):
+    if 'sample_name' in df.columns:
+        candidate = df['sample_name'].iloc[0]
+        if candidate is not None:
+            candidate = str(candidate).strip()
+            if candidate and candidate.lower() not in ('nan', 'none', 'na'):
+                return candidate
+    return sample_name_from_reads(read1_path, read2_path)
+
+SAMPLE = resolve_sample_name(samples_df, READ1_GZ, READ2_GZ)
+#SAMPLE=list(samples_df['basename'])
+SOUR=list(samples_df['source'])
+DEST=list(samples_df['dest'])
+SAMP=list(samples_df['user_id'])
+EMAIL=list(samples_df['user_email'])
+SERVER=list(samples_df['server_name'])
+SERVER_PATH=list(samples_df['server_path'])
+SERVER_SSH_PORT=list(samples_df['server_ssh_port'])
+SERVER_TRANSFER_MODE=list(samples_df['server_transfer_mode'])
+BARC=list(samples_df['primer_set'])
+HEAD=list(samples_df['sequence_number'])
+PIPE=list(samples_df['pipeline'])
+METH=list(samples_df['luka_light_protocol'])
+RUN_IGBLAST=list(samples_df['run_igblast'])
+RUN_CLONALITY=list(samples_df['run_clonality'])
+IGBLAST_SPECIES=list(samples_df['igblast_species'])
+IGBLAST_PANEL=list(samples_df['igblast_panel'])
+IGBLAST_BIN=list(samples_df['igblast_bin'])
+IGBLAST_ORGANISM=list(samples_df['igblast_organism'])
+IGBLAST_DB_V=list(samples_df['igblast_db_v'])
+IGBLAST_DB_D=list(samples_df['igblast_db_d'])
+IGBLAST_DB_J=list(samples_df['igblast_db_j'])
+IGBLAST_DATA=list(samples_df['igblast_data']) if 'igblast_data' in samples_df.columns else [''] * len(samples_df.index)
+IGBLAST_AUX=list(samples_df['igblast_auxiliary_data'])
+KEEP=list(samples_df['keep_raw'])
+TRIM=list(samples_df['trim_seq'])
+TRIM_PRIMERS=list(samples_df['trim_primers'])
+ARCHIVE_FORMAT=list(samples_df['archive_format']) if 'archive_format' in samples_df.columns else ['zip'] * len(samples_df.index)
+ARCHIVE_EXT=[fmt if fmt == 'zip' else 'tar.gz' for fmt in ARCHIVE_FORMAT]
+
+
+# Which outputs go into the delivered archive. sample.json files written before
+# this option existed have no archive_scope column, and pandas can also hand us
+# NaN for a field the frontend left blank. Both cases become the sentinel
+# 'auto', which final.script.sh resolves from keep_raw -- and which, unlike an
+# empty string, cannot slide into the next flag on the shell command line.
+def resolve_archive_scope(df):
+    if 'archive_scope' not in df.columns:
+        return ['auto'] * len(df.index)
+    scopes = []
+    for raw in df['archive_scope']:
+        value = '' if raw is None else str(raw).strip().lower()
+        scopes.append(value if value in ('light', 'full') else 'auto')
+    return scopes
+
+ARCHIVE_SCOPE=resolve_archive_scope(samples_df)
+
+
+# Whether the run may correct a mismatched IgBLAST panel. 'auto' detects and
+# corrects, 'warn' detects and reports, 'off' does neither. Submissions written
+# before this option existed have no column and get 'auto', which is what every
+# past run should have had: a T-cell library annotated against immunoglobulin
+# germlines produced an empty table and reported success.
+def resolve_receptor_check(df):
+    if 'receptor_check' not in df.columns:
+        return ['auto'] * len(df.index)
+    modes = []
+    for raw in df['receptor_check']:
+        value = '' if raw is None else str(raw).strip().lower()
+        modes.append(value if value in ('auto', 'warn', 'off') else 'auto')
+    return modes
+
+
+RECEPTOR_CHECK=resolve_receptor_check(samples_df)
+
+
+##### pipeline selection ####################################################
+# The 'pipeline' field in sample.json chooses which assembly backend runs. Each
+# is a distinct set of Snakemake rules producing the same contract, so final.smk
+# and everything downstream of it -- IgBlast, clonality, plate QC -- are shared
+# and unchanged.
+#
+# PIPE has been parsed since the beginning and never used; every run so far has
+# been classic_luka by default rather than by choice.
+import yaml
+
+PIPELINE = str(PIPE[0]).strip() if PIPE and str(PIPE[0]).strip() else "classic_luka"
+
+PIPELINE_RULES = {
+    "classic_luka": ["rules/trim_reads.smk", "rules/pandaseq.smk", "rules/genfasta.smk"],
+    # Both Illumina backends share prepare/merge/demultiplex/cluster and differ
+    # only in what they do with a well's clusters. Order matters: the core file
+    # defines the rules and the run-directory variables the second file uses.
+    "tiago_vsearch": ["rules/illumina_core.smk", "rules/tiago_vsearch.smk"],
+    "tiago_sulkseq": ["rules/illumina_core.smk", "rules/tiago_sulkseq.smk"],
+    "tiago_nanopore": ["rules/tiago_nanopore.smk"],
+}
+
+if PIPELINE not in PIPELINE_RULES:
+    raise ValueError(
+        "Unknown pipeline {!r}. Known pipelines: {}".format(PIPELINE, sorted(PIPELINE_RULES))
+    )
+
+# head -n counts LINES, and a FASTA record is two of them, so the frontend
+# multiplies the requested contig count by two before writing sequence_number.
+# Anything not driving `head` must divide it back out.
+TOPN = max(1, int(HEAD[0]) // 2)
+
+PRIMER_SET = str(BARC[0]) if BARC else ""
+
+
+def _deep_merge(base, override):
+    out = dict(base)
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def pipeline_params(name, primer_set):
+    """Parameters for a pipeline, with the run's barcode set merged over them."""
+    path = os.path.join("config", "pipelines.yaml")
+    if not os.path.exists(path):
+        return {}
+    with open(path) as handle:
+        loaded = yaml.safe_load(handle) or {}
+    block = loaded.get(name) or {}
+    merged = block.get("defaults") or {}
+    return _deep_merge(merged, (block.get("primer_set_overrides") or {}).get(primer_set))
+
+
+PARAMS = pipeline_params(PIPELINE, PRIMER_SET)
+
+
+# ---- per-run MIBS overrides -------------------------------------------------
+# A MIBS run is an experiment rather than a method: how many wells a clone must
+# reach, and how many reads it needs in one of them, are decisions about the
+# library in front of the submitter. Until now they could only be changed by
+# editing the config on the cluster, which meant nobody changed them. The
+# frontend writes them into sample.json when the MIBS pipeline is chosen, and
+# they are merged OVER the yaml defaults here, so every param() call in
+# rules/tiago_sulkseq.smk sees the run's own values without the rules having to
+# know where they came from.
+#
+# Be clear about what that leaves pipelines.yaml doing. The form always sends a
+# value, so for a run submitted through the app the yaml block under
+# tiago_sulkseq.defaults.clones is never what runs: it is the answer for a
+# sample.json that does not carry these fields -- an older run, one written by
+# hand, or a pipeline other than MIBS. A primer_set_overrides block naming any
+# of these keys would be overwritten the same way, by a value the submitter did
+# not choose, so if one is ever added it has to be applied after this merge
+# rather than before it.
+#
+# A sample.json written before these fields existed has no such columns, and a
+# field the form left blank arrives as NaN or None. Both must leave PARAMS
+# exactly as the yaml built it. The alternative is a run that asked for nothing
+# and quietly got a different clone count.
+def _sulk_scalar(df, column):
+    """The one row's value for a column, or None when absent or blank."""
+    if column not in df.columns:
+        return None
+    raw = df[column].iloc[0]
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text or text.lower() in ('nan', 'none', 'na'):
+        return None
+    return text
+
+
+def _sulk_int(df, column, minimum):
+    text = _sulk_scalar(df, column)
+    if text is None:
+        return None
+    try:
+        # float() first: jsonlite writes an R integer as 6 but an R numeric as
+        # 6.0, and int("6.0") raises.
+        value = int(float(text))
+    except (TypeError, ValueError):
+        return None
+    return value if value >= minimum else None
+
+
+def _sulk_choice(df, column, allowed):
+    text = _sulk_scalar(df, column)
+    if text is None:
+        return None
+    value = text.lower()
+    return value if value in allowed else None
+
+
+def _sulk_bool(df, column):
+    text = _sulk_scalar(df, column)
+    if text is None:
+        return None
+    return text.lower() in ('true', 't', 'yes', '1')
+
+
+def sulk_overrides(df):
+    clones = {}
+    wells = {}
+    value = _sulk_int(df, 'mibs_junction_max_distance', 0)
+    if value is not None:
+        clones['junction_max_distance'] = value
+    value = _sulk_int(df, 'mibs_min_reads_per_well', 1)
+    if value is not None:
+        clones['min_reads_per_well'] = value
+    value = _sulk_int(df, 'mibs_min_wells_per_clone', 1)
+    if value is not None:
+        clones['min_wells_per_clone'] = value
+    value = _sulk_choice(df, 'mibs_gene_grouping', ('strict', 'transitive'))
+    if value is not None:
+        clones['gene_grouping'] = value
+    value = _sulk_choice(df, 'mibs_clone_scope', ('sample', 'global'))
+    if value is not None:
+        clones['clone_scope'] = value
+    value = _sulk_bool(df, 'mibs_productive_only')
+    if value is not None:
+        clones['productive_only'] = value
+    value = _sulk_int(df, 'mibs_min_reads_per_cluster', 1)
+    if value is not None:
+        wells['min_reads_per_cluster'] = value
+    out = {}
+    if clones:
+        out['clones'] = clones
+    if wells:
+        out['wells'] = wells
+    return out
+
+
+if PIPELINE == "tiago_sulkseq":
+    PARAMS = _deep_merge(PARAMS, sulk_overrides(samples_df))
+
+
+# Whether the submitter attached an experimental design that the frontend
+# accepted. Only tiago_sulkseq reads it; see rules/tiago_sulkseq.smk for why a
+# declared design that did not arrive stops the run instead of being ignored.
+PLATEMAP_DECLARED = _sulk_bool(samples_df, 'platemap_attached') or False
+
+
+def param(section, key, fallback=None):
+    return (PARAMS.get(section) or {}).get(key, fallback)
+
+
+rule all:
+	input:
+		expand("{destiny}/{sample}/{sample}.{archive_ext}", destiny=DEST, sample=SAMPLE, archive_ext=ARCHIVE_EXT)
+
+##### load rules #####
+for _rule_file in PIPELINE_RULES[PIPELINE]:
+    include: _rule_file
+
+include: "rules/final.smk"

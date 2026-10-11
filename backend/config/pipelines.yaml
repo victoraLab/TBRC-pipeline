@@ -1,0 +1,251 @@
+# Parameters for each assembly pipeline, with per-barcode-set overrides.
+#
+# Values under `defaults` apply unless the run's primer_set has an entry in
+# `primer_set_overrides`, in which case the two are merged key by key.
+#
+# Numbers here are not arbitrary; the reasoning is in
+# docs/assembly-modernisation-proposal.md and summarised inline.
+
+tiago_vsearch:
+  defaults:
+    prep:
+      # Identical to the classic pipeline's `fastx_trimmer -f 3`: drop the two
+      # spacer bases the library carries before BC1.
+      spacer_nt: 2
+      # Illumina read-through adapter. Trimming it off the RAW mates is the single
+      # highest-value change here: a zero-insert amplicon becomes an ~85 nt pair
+      # instead of one that runs into adapter, i7 and poly-A and then mis-merges
+      # into a ~504 nt chimera. This is where 24-32% of delivered records came from.
+      adapter3_r1: AGATCGGAAGAGC
+      adapter3_r2: AGATCGGAAGAGC
+      adapter_overlap: 8
+      adapter_error_rate: 0.15
+      min_read_len: 60
+      # Fail loudly if the spacer is not where we think it is, rather than
+      # silently cutting into the barcode.
+      probe_reads: 200000
+      probe_max_offset: 6
+
+    merge:
+      # Measured, not guessed. The median genuine product needs ~36 nt of overlap
+      # (249 + 272 - 485), but the top decile of real amplicons is ~508 nt and
+      # needs only ~13. A floor of 20 discarded 27,825 pairs as "overlap too
+      # short" and lost 14 wells whose dominant sequence had 63-113 reads -- the
+      # longest-CDR3 products, exactly the ones worth keeping. 12 admits them.
+      # This is safe here in a way it would not be for pandaseq: adapter trimming
+      # removes the chimera source, and min_len below still rejects the dimers.
+      min_overlap: 12
+      max_diffs: 30
+      max_diff_pct: 25
+      # Dimers arrive here at ~85 nt once the adapter is gone, and are removed
+      # cleanly before they can become spurious variants.
+      min_len: 300
+      max_len: 0          # disabled; the over-length class is fixed at its source
+
+    demux:
+      # Only excludes wells with essentially nothing in them. Anything above this
+      # reaches the verdict stage and gets flagged rather than silently dropped;
+      # a thin well is not necessarily a fake one, and that call belongs to
+      # whoever reads the plate. Replaces `find -size -4k -delete`, which
+      # silently rescaled with amplicon length and was applied twice.
+      min_reads_per_well: 2
+      keep_unmatched: false
+
+    wells:
+      # ~4 differences over 485 nt: comfortably above the ~1.9 errors expected per
+      # merged pair, comfortably below any between-clone distance.
+      cluster_id: 0.99
+      iddef: 2
+      # Wells whose dominant sequence has fewer reads than this are FLAGGED in
+      # qc/assembly/well_verdicts.tsv and still delivered. Set drop_low_depth to
+      # true to omit them instead.
+      min_dominant_reads: 3
+      drop_low_depth: false
+      # A second cluster this close to the first suggests a doublet rather than
+      # sequencing error.
+      multiclonal_ratio: 0.2
+      # Light-chain rescue: the 3' reverse-primer tail, and how many bases of
+      # gene-specific forward primer follow the 5' handle. 23 was established by
+      # per-base entropy over 153,368 real light-chain reads.
+      light_chain_3p: CACTGACACTCCCACGAGCTC
+      light_chain_primer_nt: 23
+
+  primer_set_overrides:
+    T:
+      merge:
+        # TCR amplicons are shorter than the immunoglobulin products.
+        min_len: 200
+
+tiago_nanopore:
+  defaults:
+    demux:
+      # Tolerances carried over from the assay's own demultiplexer, which is
+      # vendored unchanged. The well anchor is longer than the plate cassette,
+      # so it can afford a looser tolerance.
+      well_barcode_mm: 2
+      plate_barcode_mm: 1
+      primer_mm: 2
+      min_insert_length: 250
+    tools:
+      # abpoa, racon, minimap2 and vsearch are not in the snakemake environment
+      # that dispatches runs; they live in their own env so installing them
+      # cannot disturb a working Illumina pipeline. The rules prepend this to
+      # PATH rather than activating it, which keeps the dispatch environment
+      # exactly as every other pipeline sees it.
+      env_bin: /path/to/scratch/miniforge3/envs/tbrc_nanopore/bin
+    consensus:
+      # A well below this many reads is not called. Matches the reference
+      # pipeline's --primary-min-reads so yield comparisons stay meaningful.
+      min_reads_per_well: 10
+      # Between rescue_min_reads and min_reads a well is still called, but marked
+      # rescued_low_depth rather than mixed in with clean wells. On one library
+      # the wells in this band were 85.5% productive against 92% for primaries --
+      # real sequences, but visibly weaker, and the user should be told which.
+      rescue_min_reads: 5
+      # Below this share of reads in the dominant clone the well is flagged as a
+      # probable doublet. A chimeric consensus of two antibodies still annotates
+      # as a plausible antibody, so nothing downstream would catch it.
+      min_dominance: 0.70
+      # Cap on unique sequences entering the alignment, also from the reference
+      # pipeline. Selection spends 75% of the budget on abundance and the rest
+      # on length, so full-length reads always reach the aligner.
+      max_unique: 200
+      # Identity for clustering a well's reads to its dominant clone. Chosen,
+      # not derived: too loose merges a genuine doublet into one chimeric
+      # consensus, too tight splits an SHM-diverged clone and loses depth.
+      # Worth revisiting against clone assignments from read-level annotation.
+      cluster_id: 0.85
+      # abpoa is 8.2x faster than mafft at parity on this data. spoa and mafft
+      # are kept selectable for comparison rather than for production.
+      engine: abpoa
+    annotate:
+      # Location of the IgBLAST tree, relative to the pipeline root.
+      igblast_root: igblast
+      # Germline panel for reading VDJ coordinates off the long consensus.
+      # igh for heavy chain; ig_light for kappa/lambda libraries.
+      panel: igh
+    vdj:
+      # Deliberately stricter than the long consensus. A read below this quality
+      # contributes a false mutation rather than mere noise, and a base called
+      # below the majority threshold becomes N -- a gap in the evidence, which is
+      # honest, rather than a substitution that never happened.
+      min_mean_q: 12.0
+      min_reads: 10
+      max_unique: 300
+      min_depth: 10
+      min_base_fraction: 0.70
+
+tiago_sulkseq:
+  defaults:
+    # The front half is shared with tiago_vsearch and inherits nothing
+    # automatically, so the values that matter are repeated here rather than
+    # left to a default that could drift.
+    prep:
+      spacer_nt: 2
+      adapter3_r1: AGATCGGAAGAGC
+      adapter3_r2: AGATCGGAAGAGC
+      adapter_overlap: 8
+      adapter_error_rate: 0.15
+      min_read_len: 60
+      probe_reads: 200000
+      probe_max_offset: 6
+    merge:
+      # Deliberately STRICTER than tiago_vsearch, which uses 12 / 30 / 25.
+      #
+      # Those values were loosened to recover read pairs the classic pipeline
+      # discarded, and for a single-cell well that is a clear gain: a recovered
+      # read adds depth to a consensus, and the dominance step absorbs its
+      # errors. MIBS has no dominance step. Every well is a pool, so a recovered
+      # noisy read is not extra evidence for an existing clone -- it is a
+      # candidate NEW clone, and clone count is the entire measurement.
+      #
+      # Measured on the 2020 library: sequences seen in 1-2 reads sit at 96.06%
+      # V identity and 80.7% productive, against 98.04% and 87.2% for those seen
+      # 50+ times. That is ~8 extra mismatches over the V region, monotonic with
+      # read count -- accumulated error, not somatic hypermutation.
+      min_overlap: 20
+      max_diffs: 5
+      max_diff_pct: 5
+      min_len: 300
+      max_len: 0
+    demux:
+      # A MIBS well holds ~100 cells and is sequenced deep, so a well with
+      # almost nothing in it is a failed well, not a thin one.
+      min_reads_per_well: 10
+      keep_unmatched: false
+
+    wells:
+      # 0.99 rather than exact dereplication. The published analysis collapsed
+      # only identical assemblies, which leaves each read's error cloud as its
+      # own one-read sequence; clustering folds those reads back into the
+      # sequence they came from, so a real clone reaches the 6-read threshold on
+      # its own reads instead of losing them to noise. Set to 1.0 to reproduce
+      # the published collapsing exactly.
+      cluster_id: 0.99
+      iddef: 2
+      # How many sequences to keep per well. Deliberately NOT set here: it comes
+      # from "Contigs or isoforms to retrieve" on the submission form, because it
+      # is a property of the experiment -- how many cells were sorted into each
+      # well -- and not of the method. The form defaults it to 100 when this
+      # pipeline is chosen; a run that sorted 10 or 500 cells sets it to that.
+      # Uncomment to pin it for every run regardless of the form.
+      # max_clusters_per_well: 500
+      # Not only a cost control. A cluster this thin is more likely to be an
+      # error cloud than a cell: see the merge block above for the numbers. It
+      # is kept low here because the published analysis filters on reads summed
+      # per clone per well rather than per sequence, and raising this drops
+      # sequences before they can contribute to that sum. Raise it to ~10 if a
+      # library was sequenced deeply enough that a real clone never lands here.
+      min_reads_per_cluster: 2
+      # Both of these drive verdict labels only, and neither drops a well here.
+      # The multiclonal flag is meaningless for this assay -- a MIBS well is
+      # supposed to be multiclonal -- so it is set never to fire.
+      min_dominant_reads: 2
+      multiclonal_ratio: 1.0
+
+    annotate:
+      # The fallback only. The submission form's IgBLAST panel now wins, the
+      # same way it does for nanopore: this key used to be consulted first,
+      # which annotated a light-chain MIBS library against IgH germlines with
+      # no warning.
+      panel: igh
+
+    # The values under clones: and wells.min_reads_per_cluster are the answer
+    # for a run that does not carry its own. The submission form writes all of
+    # them into sample.json for every MIBS run and the Snakefile merges those
+    # over this block, so editing here changes nothing for a run submitted
+    # through the app: it changes an older sample.json, a hand-written one, and
+    # the documented default. A primer_set_overrides block naming one of these
+    # keys would be overwritten by the form the same way.
+    clones:
+      # The published rule: same V, same J, junction Hamming distance <= 4.
+      junction_max_distance: 4
+      # How gene calls decide clone membership. 'strict' requires two sequences
+      # to share a gene before they can join; 'transitive' lets a chain of
+      # ambiguous calls put them in one group and links on junction distance
+      # alone. Strict cannot invent a clone and is the default.
+      #
+      # It splits somewhat more when V calls are noisy, and on de novo
+      # assembled sequences they are. The effect is smaller than it looks:
+      # reproducing the 2020 library gives 30,213 clones strict and 28,490
+      # transitive, against a published 21,132. Neither reading explains that
+      # difference.
+      gene_grouping: strict
+      # "More than 5 reads in a single well", counted on reads summed per clone
+      # per well.
+      min_reads_per_well: 6
+      # "Present in at least 2 wells of the same sample". This is the error
+      # control: a PCR artefact or a chimera appears once.
+      min_wells_per_clone: 2
+      # The published analysis kept non-productive rearrangements. Turning this
+      # on is a real change to the answer, not a tidy-up.
+      productive_only: false
+      # Where clone assignment happens, which is not where clones are counted.
+      # The published pipeline clustered every sample together and the notebook
+      # then scoped the result per sample. Clustering inside each sample is
+      # stricter, because a single-linkage chain cannot pass through a sequence
+      # in another mouse, and it gives finer clones. 'global' reproduces the
+      # published method. 'sample' is what the clones script did unconditionally
+      # before it took the choice as an argument, so this default keeps every
+      # existing run calling the clones it called before.
+      clone_scope: sample

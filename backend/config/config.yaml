@@ -1,0 +1,26 @@
+samples:
+  Tiago_Test2:
+    user_id: Tiago
+    user_email: you@example.org
+    input_method: Server
+    server_name: storage1
+    primer_set: B2
+    trim_primers: false
+    sequence_number: 6
+    pipeline: classic_luka
+    trim_seq: GGGAATTCGAGGTGCAGCTGCAGGAGTCTGG
+    source: Tiago/Tiago_Test2
+    dest: results/Tiago/Tiago_Test2
+  carla:
+    user_id: Tiago
+    user_email: you@example.org
+    input_method: Server
+    server_name: storage1
+    primer_set: B
+    trim_primers: false
+    sequence_number: 6
+    pipeline: classic_luka
+    trim_seq: GGGAATTCGAGGTGCAGCTGCAGGAGTCTGG
+    source: Tiago/carla
+    dest: results/Tiago/carla
+

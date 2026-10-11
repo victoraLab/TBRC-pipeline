@@ -1,0 +1,10 @@
+.git/
+.snakemake/
+slurm_outs/*
+data/runs/*
+logs/*
+data/barcodes/*
+results/*
+
+# host-local settings
+config/site.env
