@@ -17,15 +17,23 @@
 #
 # Upstream is the authority. If it changes, re-vendor rather than diverge.
 #
-# ONE local change, and it is a parameter, not a rewrite: the inner reverse
-# primer that the plate cassette sits behind was a constant (the IgA primer the
-# upstream libraries used), so a library amplified with any other constant-region
-# primer had every plate cassette missed -- on IgG heavy and kappa light MinION
-# libraries no well-assigned read got a plate, although the plate barcode and the
-# adapter are right there behind the IgG and kappa primers.
-# --inner-reverse-primer (repeatable) defaults to the upstream constant, so a run
-# that does not pass it demultiplexes exactly as before. Carry this forward when
-# re-vendoring.
+# TWO local changes, both parameters, not rewrites; carry them forward when
+# re-vendoring. With neither passed it demultiplexes and reports exactly as
+# upstream does.
+#
+# --inner-reverse-primer (repeatable): the inner reverse primer that the plate
+# cassette sits behind was a constant (the IgA primer the upstream libraries
+# used), so a library amplified with any other constant-region primer had every
+# plate cassette missed -- on IgG heavy and kappa light MinION libraries no
+# well-assigned read got a plate, although the plate barcode and the adapter are
+# right there behind the IgG and kappa primers. Defaults to the upstream constant.
+#
+# --summary-all-platewells: the summary lists a plate-well only once it has a
+# clean read, so its short-insert count is dropped when the well has none.
+# demux_nanopore_parallel.py runs this script once per input file and adds the
+# summaries up; a well clean in one file and short-only in another would lose
+# the second file's short reads. With the flag every well with clean or short
+# reads is listed; the merge then prints only the wells upstream would.
 """Orient, Well+Plate demultiplex, and trim both ends of long VDJ reads."""
 
 import argparse, gzip, math, re
@@ -99,6 +107,8 @@ def main():
     ap.add_argument("--inner-reverse-primer", action="append", default=None,
                     help="Constant-region primer the plate cassette follows, 5'->3' as synthesised; repeatable. "
                          "Default: the upstream IgA primer " + INNER_REVERSE_PRIMER)
+    ap.add_argument("--summary-all-platewells", action="store_true",
+                    help="List every plate-well with clean or short reads in the summary, not only those with clean reads")
     args = ap.parse_args()
 
     anchors, plates_forward = table(args.well_anchors), table(args.plate_barcodes)
@@ -193,7 +203,7 @@ def main():
         for p in sorted(plates_forward):
             for w in sorted(anchors):
                 c=p+w
-                if by_cell[c]["clean"]:
+                if by_cell[c]["clean"] or (args.summary_all_platewells and by_cell[c]["short"]):
                     for k in ("clean","a1","adapter_verified","short"): out.write(f"platewell\t{c}\t{k}\t{by_cell[c][k]}\n")
     print(f"Clean PlateWell FASTA: {clean_path}\nWell-only partial FASTA: {partial_path}\nQC: {qc_path}\nSummary: {summary_path}")
 

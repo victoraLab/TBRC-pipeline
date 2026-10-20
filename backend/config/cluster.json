@@ -11,7 +11,12 @@
         "mailtype": "END,FAIL"
     },
     "demux_nanopore": {
-        "cpus_per_task": "2",
+        "cpus_per_task": "8",
+        "mem": "8G",
+        "time": "04:00:00"
+    },
+    "library_qc_nanopore": {
+        "cpus_per_task": "4",
         "mem": "8G",
         "time": "04:00:00"
     },

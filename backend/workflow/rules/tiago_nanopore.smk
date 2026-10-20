@@ -64,6 +64,10 @@ rule demux_nanopore:
         summary="{}/qc/nanopore/{}.demux_summary.tsv".format(_RUNDIR, _SAMPLE),
     log:
         "logs/{}.nanopore_demux.log".format(_SAMPLE),
+    # One vendored-demux process per input FASTQ, this many at a time; a MinKNOW
+    # run arrives as dozens of chunks. A full 40-chunk, 8.1 GB library: 56 min
+    # serial, 6.6 min on 8, byte-identical outputs.
+    threads: 8
     params:
         prefix="{}/nanopore/{}".format(_RUNDIR, _SAMPLE),
         sample=_SAMPLE,
@@ -82,7 +86,7 @@ rule demux_nanopore:
         set -euo pipefail
         {_NP_PATH}
         mkdir -p "$(dirname {output.clean})" "$(dirname {output.summary})"
-        python3 {_SCRIPTS}/demux_nanopore_wells.py \
+        python3 {_SCRIPTS}/demux_nanopore_parallel.py --jobs {threads} \
             "$(echo {input.reads} | cut -d' ' -f1)" \
             '{params.anchors}' '{params.plates}' '{params.prefix}' \
             --sample '{params.sample}' \
