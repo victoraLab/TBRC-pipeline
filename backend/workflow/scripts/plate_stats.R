@@ -74,7 +74,7 @@ plate_layout <- data.frame(
 )
 
 # Split files are named <sample><BC1><BC2>.fasta, and the barcode sets disagree
-# on which of the two is the plate: B2 is well-then-plate (A01P01) while set Y is
+# on which of the two is the plate: B2 is well-then-plate (A01P01) while CBC is
 # plate-then-well (P01A01). The previous regex matched only plate-first, so the
 # default barcode set silently produced empty plates.
 #

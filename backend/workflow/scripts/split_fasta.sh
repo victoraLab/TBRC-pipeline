@@ -16,7 +16,7 @@ luka_light_3p="CACTGACACTCCCACGAGCTC"
 # Length of the gene-specific portion of the forward primer that follows the 5'
 # handle in the light-chain protocol. Those bases are primer-derived, not
 # template, so they are cut before collapsing. Measured on real luka_light data
-# (RUN10): per-base entropy over the 23 nt after the handle averages
+# (CMu/RUN10): per-base entropy over the 23 nt after the handle averages
 # 0.77 bits versus 1.62 bits from base 24 on, i.e. template diversity starts at
 # base 24 exactly. fastx_trimmer -f is 1-based, hence 24.
 luka_light_primer_footprint=24
@@ -145,7 +145,7 @@ if [ "${method}" == "luka_light" ]; then
     # Intermediates go to a scratch directory, never next to the per-well
     # FASTAs. Writing modified_*/trimmed_* into split2/ meant a re-entered run
     # picked them up in the *fasta glob, and in the deployed January build they
-    # were collapsed straight into final.fasta: the delivered RUN10 result
+    # were collapsed straight into final.fasta: the delivered CMu/RUN10 result
     # carried 2,013 untrimmed duplicate records out of 3,411.
     luka_tmp="$(mktemp -d)"
     trap 'rm -rf "${luka_tmp}"' EXIT

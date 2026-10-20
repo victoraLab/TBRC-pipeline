@@ -230,7 +230,7 @@ ARCHIVE_SCOPE=resolve_archive_scope(samples_df)
 
 # An optional results subfolder on the storage server, so several passes over one
 # plate land together: RUN15's four runs were pushed side by side into
-# results/jdoe/ and moved into results/RUN15/ by hand. It becomes a remote
+# results/CMu/ and moved into results/CMu/RUN15/ by hand. It becomes a remote
 # path, so anything but one plain path segment stops the run here. 'none', not
 # an empty string, for the same command-line reason as archive_scope.
 def resolve_run_group(df):

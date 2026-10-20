@@ -170,7 +170,7 @@ fi
 # luka_light preprocessing already stripped the 5' handle inside
 # split_fasta.sh, so running the same cutadapt again here can only destroy
 # data: --discard-untrimmed would throw away every read whose handle is
-# already gone. The Jan-2026 RUN10 run is the worked example -- 3,411
+# already gone. The Jan-2026 CMu/RUN10 run is the worked example -- 3,411
 # assembled sequences went in, 417 came out, and exactly one of those was
 # longer than 200 nt. That still holds for classic_luka and tiago_sulkseq.
 # tiago_vsearch now clusters on trimmed copies but delivers the reads whole,

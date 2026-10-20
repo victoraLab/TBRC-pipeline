@@ -423,7 +423,7 @@ shinyUI(fluidPage(theme = shinytheme("flatly"),
           style = "margin-top:-8px;",
           "Filled in from the barcode set. Change it only for a library that uses a different 5' handle."
         ),
-        tags$div(class = "card-note", "The 5' handle that sits between the plate barcode and the V region. The default is the B-cell handle (EcoRI site + IgH FR1 consensus) and matches barcode sets B, B2, B cell TA, set X and set W. A T-cell library uses a different handle: leaving this default with barcode set T discards the whole library, because trimming keeps only reads where this sequence is found."),
+        tags$div(class = "card-note", "The 5' handle that sits between the plate barcode and the V region. The default is the B-cell handle (EcoRI site + IgH FR1 consensus) and matches barcode sets B, B2, B cell TA, LukaP and Carla_Barcodes. A T-cell library uses a different handle: leaving this default with barcode set T discards the whole library, because trimming keeps only reads where this sequence is found."),
         sliderInput("n_read", "Contigs or isoforms to retrieve", min = 1, max = 500, step = 1, value = 3),
         tags$div(class = "card-note", style = "margin-top:-8px;",
                  textOutput("nReadHint", inline = TRUE)),

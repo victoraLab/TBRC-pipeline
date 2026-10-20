@@ -14,7 +14,7 @@ SOURCE_DIRECTORY="${TBRC_BC_DIR:-${FRONTEND_DIR}/bc}/"
 TARGET_DIRECTORY="${DTN_HOST}:${PIPELINE_ROOT}/data/barcodes/"
 
 # Add new sets only; never rewrite one the cluster already has. The app's tree
-# and the cluster's are not identical (set Y is stored reverse-complemented with
+# and the cluster's are not identical (CBC is stored reverse-complemented with
 # BC1 and BC2 swapped in frontend/bc; B2's BC1 lacked its final newline), and a
 # plain rsync after any upload would have replaced the cluster's copies, the
 # ones runs actually read. The app refuses an upload under an existing folder

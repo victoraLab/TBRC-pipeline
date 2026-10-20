@@ -334,7 +334,7 @@ tool takes the user from `cluster.dtn_host` (`user@host`), or from `TBRC_SSH_USE
 Raw data already on a storage server (the usual case):
 
 ```bash
-./tbrc run --user jdoe --server storage1 --folder RUN15 --primer-set B2
+./tbrc run --user CMu --server storage1 --folder RUN15 --primer-set B2
 ```
 
 `--folder` is one folder name directly under that server's `rawdata_path`, and the run takes
@@ -345,7 +345,7 @@ delivered. Expect tens of minutes; run it under `nohup` or `tmux` if you may dis
 FASTQ files on this machine:
 
 ```bash
-./tbrc run --user jdoe --run-name RUN15 --fastq-dir /path/to/pair --primer-set B2
+./tbrc run --user CMu --run-name RUN15 --fastq-dir /path/to/pair --primer-set B2
 ```
 
 The pair is copied to the cluster and dispatched the same way. Results stay on the cluster
@@ -359,13 +359,13 @@ groups them: library, annotation, output, MIBS, where to run.
 `--dry-run` prints the `sample.json` and the commands and touches nothing remote:
 
 ```bash
-./tbrc run --user jdoe --server storage1 --folder RUN15 --primer-set B2 --dry-run
+./tbrc run --user CMu --server storage1 --folder RUN15 --primer-set B2 --dry-run
 ```
 
 ### Run locally instead of on the cluster
 
 ```bash
-./tbrc run --user jdoe --run-name RUN15 --fastq-dir /path/to/pair --primer-set B2 --local --cores 8
+./tbrc run --user CMu --run-name RUN15 --fastq-dir /path/to/pair --primer-set B2 --local --cores 8
 ```
 
 `--local` runs the workflow on this machine, natively when `snakemake` is on `PATH`
@@ -416,7 +416,7 @@ After an IgBLAST database or panel fix, or to re-make a report, there is no need
 again. On the cluster, from the pipeline root:
 
 ```bash
-./rerun_final.sh <user>-<run>          # e.g. jdoe-RUN15_all; `ls .parallel/` lists them
+./rerun_final.sh <user>-<run>          # e.g. CMu-RUN15_all; `ls .parallel/` lists them
 ./rerun_final.sh <user>-<run> --push   # also push the new archive, replacing the old one on the NAS
 ```
 

@@ -764,7 +764,7 @@ app_action_button <- function(inputId, label, ...) {
 # "Run on this server" only works where a sibling backend/ directory and the
 # workflow tools actually exist. On a Shiny host that received only frontend/,
 # neither is true -- which is why the toggle produced 7 raw shell errors for
-# two users before it was gated.
+# Sandra and CMu before it was gated.
 LOCAL_BACKEND_DIR <- normalizePath(file.path(APP_DIR, "..", "backend"), winslash = "/", mustWork = FALSE)
 
 local_backend_status <- function() {
