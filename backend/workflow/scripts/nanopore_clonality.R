@@ -53,7 +53,7 @@ well_of <- function(x) sub("\\|.*$", "", x)
 # One gene per call: IgBLAST returns comma-separated alleles by descending score.
 # The allele goes too, as in the report and the clonality package: tied alleles
 # are listed alphabetically, so the same gene can come back as *01 in one well
-# and *02 in another and split one clone (test results/igkj1-2026-10-19/).
+# and *02 in another and split one clone (the lab's validation notes).
 first_gene <- function(x) sub("\\*.*$", "", sub(",.*$", "", ifelse(is.na(x), "", x)))
 
 d <- airr %>%

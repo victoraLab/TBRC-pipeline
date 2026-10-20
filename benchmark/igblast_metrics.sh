@@ -16,20 +16,20 @@ OUT="${BENCH}/igblast_metrics.tsv"
 # no `declare -A`, and this script is run from the host.
 lookup() {
     case "$1" in
-        CMP12)               echo "CMP12 igh Ig" ;;
-        CMP13)               echo "CMP13 igh Ig" ;;
-        CMP14new)            echo "CMP14 igh Ig" ;;
-        CMP10)               echo "CMP10 ig_light Ig" ;;
-        MS_biotin_202604)    echo "Miseq_1_MS trb TCR" ;;
-        ABGRES)              echo "AB221104 trb TCR" ;;
-        parabiosis_trial_rp) echo "RP230620 trb TCR" ;;
+        RUN12)               echo "RUN12 igh Ig" ;;
+        RUN13)               echo "RUN13 igh Ig" ;;
+        RUN14new)            echo "RUN14 igh Ig" ;;
+        RUN10)               echo "RUN10 ig_light Ig" ;;
+        TRB_RUN1)    echo "TRB_RUN1_sample trb TCR" ;;
+        TRB_RUN2)              echo "TRB_RUN2_sample trb TCR" ;;
+        TRB_RUN3) echo "TRB_RUN3_sample trb TCR" ;;
         *) echo "" ;;
     esac
 }
 
 printf 'dataset\tpipeline\tpanel\tsequences\tv_called\tj_called\tproductive\tcdr3\n' > "${OUT}"
 
-for ds in CMP12 CMP13 CMP14new CMP10 MS_biotin_202604 ABGRES parabiosis_trial_rp; do
+for ds in RUN12 RUN13 RUN14new RUN10 TRB_RUN1 TRB_RUN2 TRB_RUN3; do
   set -- $(lookup "$ds"); s="$1"; panel="$2"; st="$3"
   [ -n "$s" ] || { echo "skip $ds: unknown"; continue; }
   for pl in classic_luka tiago_vsearch; do

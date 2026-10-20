@@ -1,5 +1,5 @@
 samples:
-  Tiago_Test2:
+  example_a:
     user_id: Tiago
     user_email: you@example.org
     input_method: Server
@@ -9,9 +9,9 @@ samples:
     sequence_number: 6
     pipeline: classic_luka
     trim_seq: GGGAATTCGAGGTGCAGCTGCAGGAGTCTGG
-    source: Tiago/Tiago_Test2
-    dest: results/Tiago/Tiago_Test2
-  carla:
+    source: Tiago/example_a
+    dest: results/Tiago/example_a
+  example_b:
     user_id: Tiago
     user_email: you@example.org
     input_method: Server
@@ -21,6 +21,6 @@ samples:
     sequence_number: 6
     pipeline: classic_luka
     trim_seq: GGGAATTCGAGGTGCAGCTGCAGGAGTCTGG
-    source: Tiago/carla
-    dest: results/Tiago/carla
+    source: Tiago/example_b
+    dest: results/Tiago/example_b
 

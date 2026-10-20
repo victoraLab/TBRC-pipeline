@@ -36,7 +36,7 @@ if (!file.exists(counts_file) || !file.exists(quality_file)) {
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 # Which plates exist is a property of the run, not a constant. The layout used to
-# be hardcoded to 12, so a run using plates 13-16 -- as CMP13 does -- had them
+# be hardcoded to 12, so a run using plates 13-16 -- as RUN13 does -- had them
 # silently dropped from every plate figure and table.
 build_plate_layout <- function(plate_ids) {
   plate_numbers <- sort(unique(suppressWarnings(as.integer(sub("^plate_", "", plate_ids)))))
@@ -74,12 +74,12 @@ plate_layout <- data.frame(
 )
 
 # Split files are named <sample><BC1><BC2>.fasta, and the barcode sets disagree
-# on which of the two is the plate: B2 is well-then-plate (A01P01) while CBC is
+# on which of the two is the plate: B2 is well-then-plate (A01P01) while set Y is
 # plate-then-well (P01A01). The previous regex matched only plate-first, so the
 # default barcode set silently produced empty plates.
 #
 # Strip the sample name first -- it can itself contain a plate-like token, e.g.
-# CMP10 -- then take the plate from whichever P<n> remains and the well from the
+# RUN10 -- then take the plate from whichever P<n> remains and the well from the
 # row letter and column digits beside it.
 split_token <- function(token, sample_name = "") {
   base <- sub("\\.fasta$", "", basename(token))

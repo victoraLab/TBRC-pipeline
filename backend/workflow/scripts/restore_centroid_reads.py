@@ -3,9 +3,9 @@
 
 A well is clustered on copies of its reads with the 5' primer footprint removed,
 because the degenerate kappa primer split identical clones into separate
-clusters: on CMP15, 153 of 186 "multiclonal" kappa wells were one clone, and 752
+clusters: on RUN15, 153 of 186 "multiclonal" kappa wells were one clone, and 752
 of the 770 differences between their clusters sat inside the 23-nt primer
-(docs/cmp15-mixed-plate-study-2026-09-17.md, finding 4).
+(the lab's study notes, finding 4).
 
 What is delivered is still a real read, untrimmed: among the reads whose
 primer-free copy IS the centroid, the most common whole sequence (ties to the
@@ -15,7 +15,7 @@ vote only settles the masked stretch, where one read's sequencing error would
 otherwise be delivered as a mutation on a heavy chain (FR1 nt 24-46 are
 template there). Voting across the whole cluster instead let primer
 degeneracy decide: the true template's reads are split across primer
-variants, so an error copy on a single variant could outvote it (CMP15 kappa,
+variants, so an error copy on a single variant could outvote it (RUN15 kappa,
 C07P14: 2 substitutions in a 912-read well). Membership comes from the
 dereplication's --uc table; the label, and so the cluster size, is kept.
 

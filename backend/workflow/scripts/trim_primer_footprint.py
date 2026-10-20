@@ -4,7 +4,7 @@
 luka_light cut a fixed 23 nt after the 5' handle from every read before
 assembly. That is the F_106 kappa primer on a kappa read, but the heavy forward
 primer is the handle itself, so on a heavy read the 23 nt were template: every
-heavy chain on a mixed luka_light plate lost FR1 nt 24-46 (CMP15_kappa: 424
+heavy chain on a mixed luka_light plate lost FR1 nt 24-46 (RUN15_kappa: 424
 records). The standard protocol cut nothing and left the kappa primer in the
 delivered sequence, where it reads as 19% "mutation" in FR1. The locus decides
 how much is primer, and only the annotation knows the locus, so the cut is made

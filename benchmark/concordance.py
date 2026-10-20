@@ -57,10 +57,10 @@ def main():
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
-    SPEC = [("CMP12", "CMP12", "IgH"), ("CMP13", "CMP13", "IgH"),
-            ("CMP14new", "CMP14", "IgH"), ("CMP10", "CMP10", "IgK"),
-            ("MS_biotin_202604", "Miseq_1_MS", "TRB"), ("ABGRES", "AB221104", "TRB"),
-            ("parabiosis_trial_rp", "RP230620", "TRB")]
+    SPEC = [("RUN12", "RUN12", "IgH"), ("RUN13", "RUN13", "IgH"),
+            ("RUN14new", "RUN14", "IgH"), ("RUN10", "RUN10", "IgK"),
+            ("TRB_RUN1", "TRB_RUN1_sample", "TRB"), ("TRB_RUN2", "TRB_RUN2_sample", "TRB"),
+            ("TRB_RUN3", "TRB_RUN3_sample", "TRB")]
 
     results = []
     for ds, samp, typ in SPEC:

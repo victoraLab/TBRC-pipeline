@@ -880,13 +880,13 @@ server <- function(input, output, session) {
   # builds them: each BC1 name concatenated with each BC2 name, then put through
   # the same canonicaliser the pipeline uses. The two files split the well name
   # differently in every set -- B names columns in BC1 and plate+row in BC2, T
-  # is the other way round, B2, CBC and B_Juhee split it as row+column and plate
+  # is the other way round, B2, set Y and set Z split it as row+column and plate
   # -- and the concatenation is the one rule all six obey, because each output
   # file is named after the two barcodes that matched it.
   #
   # The cross product is the point rather than an implementation detail.
-  # Classifying the tokens and multiplying the three vocabularies said LukaP has
-  # sixteen wells; LukaP has four (A03, B04, E01 and G10, on one plate), so a
+  # Classifying the tokens and multiplying the three vocabularies said set X has
+  # sixteen wells; set X has four (A03, B04, E01 and G10, on one plate), so a
   # design naming P01A10 passed a check that only asked whether row A and column
   # 10 exist somewhere in the set.
   barcode_geometry <- function(barcode_set) {
@@ -1091,7 +1091,7 @@ server <- function(input, output, session) {
     if (isTRUE(geometry$ok)) {
       # A well key is checked against the set's actual well list rather than
       # against its rows and columns separately, because a barcode set is not
-      # always a full plate: LukaP defines four wells and every one of P01A01 to
+      # always a full plate: set X defines four wells and every one of P01A01 to
       # P01H12 passed a row-and-column check.
       plateless <- well_keys[!grepl("^P", well_keys)]
       # A key with no plate is not a well of the only plate. The well the
@@ -1765,7 +1765,7 @@ server <- function(input, output, session) {
   })
 
   # Light-chain rescue used to force classic_luka here. IgBlast annotation
-  # reversed that: on CMP10, tiago_vsearch is 79.0% productive against 61.1%, with
+  # reversed that: on RUN10, tiago_vsearch is 79.0% productive against 61.1%, with
   # J called on 95.8% of sequences against 69.2% and a CDR3 on 93.5% against
   # 68.8% -- and the gain holds at every level of read support, not just the thin
   # wells. Its one real cost is 7 wells with 50+ reads that classic delivers and

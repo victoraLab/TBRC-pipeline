@@ -11,7 +11,7 @@ sequences. Both failures look like success:
     then reports no clones. Both steps exit zero. The run is delivered.
 
   * A mixed heavy-plus-kappa plate submitted as `igh` does not fail either: every
-    kappa sequence is forced onto the best-scoring IGHV gene. On CMP15 that was
+    kappa sequence is forced onto the best-scoring IGHV gene. On RUN15 that was
     623 of 946 records, all "annotated".
 
   * A plate whose heavy chains are human, submitted as mouse, aligns at 75%
@@ -39,7 +39,7 @@ Species outcomes (the `species_verdict` field):
   per_locus     the loci need different germline sets: one locus per species,
                 or a locus whose V comes from one species and whose D and J
                 from another (a V knock-in on the host's own D, J and C, as in
-                CMP15). LOCUS_PLAN says which; annotate_per_locus.py follows it.
+                RUN15). LOCUS_PLAN says which; annotate_per_locus.py follows it.
   mixed         no species is decisive and no plan could be made, or the mode
                 says report only. The declared species is kept and the
                 per-locus composition says which locus is which.
@@ -189,7 +189,7 @@ def parse_airr(path, min_score, max_evalue):
             # The V call names the locus. IgBLAST's own locus column is derived
             # from more than the V hit and disagrees with it on a third of the
             # rows when a single-locus panel is forced onto a mixed plate
-            # (CMP15_kappa: 516 of 1,425), so it is not used here.
+            # (RUN15_kappa: 516 of 1,425), so it is not used here.
             locus = v_call.split("*")[0][:3].upper()
             locus = locus if locus in LOCUS_CLASS else ""
             hits[seq_id] = (locus, score)
@@ -255,7 +255,7 @@ def main():
     # anything before it is called the library's class or species.
     ap.add_argument("--decisive-fraction", type=float, default=0.80)
     # A single-locus Ig or TCR panel is widened to its class panel when this
-    # share of aligned sequences belongs to a locus it does not carry. On CMP15,
+    # share of aligned sequences belongs to a locus it does not carry. On RUN15,
     # submitted as igh, 62% of the plate was kappa; the threshold is set well
     # below that so a plate that is one-fifth light chain is not silently
     # annotated as heavy only.
@@ -264,7 +264,7 @@ def main():
     ap.add_argument("--min-assigned-fraction", type=float, default=0.20)
     # A locus gets its own germline plan only with this many sequences in the
     # probe, and only when one species wins its V and one its J by
-    # --decisive-fraction. CMP15_all's probe held 151 heavy and 240 kappa.
+    # --decisive-fraction. RUN15_all's probe held 151 heavy and 240 kappa.
     ap.add_argument("--plan-min-sequences", type=int, default=20)
     # What counts as an alignment. Both are far below anything a real V region
     # produces and far above anything random DNA reaches; see parse_airr.
@@ -414,7 +414,7 @@ def main():
             locus = locus or ("IG?" if cls == "Ig" else "TR?")
             # The J is judged on its own, among the same class's tables: a V
             # knocked in from one species can sit on the host's D and J
-            # (CMP15: human IGHV1-69, 95% to human V; mouse JH, 98-100%).
+            # (RUN15: human IGHV1-69, 95% to human V; mouse JH, 98-100%).
             j_best = None
             for (j_species, j_cls), scores in j_tables.items():
                 score = scores.get(name)
@@ -496,7 +496,7 @@ def main():
 
     # A plan per locus, when the loci need different germline sets. This
     # overrides the plate-wide verdict above, which can only pick one species:
-    # on CMP15 it kept mouse for a plate whose heavy V is human (75% identity)
+    # on RUN15 it kept mouse for a plate whose heavy V is human (75% identity)
     # or, on the heavy-only run, switched to human and so scored a mouse JH
     # against human J (FR4 "13% mutated"). Neither is fixable by choosing.
     plan = {}

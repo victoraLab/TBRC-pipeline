@@ -172,7 +172,7 @@ rule consensus_nanopore:
         # Prefer the plate-resolved reads whenever there are any. Choosing by
         # file size is wrong: a plate-multiplexed library still produces a large
         # well-only file from reads whose plate cassette was not read, and on
-        # S86C34 that file (45 MB) is bigger than the plate-resolved one (24 MB).
+        # one heavy-chain library that file (45 MB) is bigger than the plate-resolved one (24 MB).
         # Selecting on size processed 92 wells instead of 949, silently.
         src={input.clean}
         if [ ! -s "$src" ]; then

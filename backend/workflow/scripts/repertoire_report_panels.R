@@ -12,7 +12,7 @@
 # The MiniMouse IGHV3-6CHI1-64 -> IGHV3-6 collapse is deliberately NOT applied.
 # It exists because the 10x cellranger reference and bulk annotation name that
 # gene differently; TBRC annotates with IgBLAST against one IMGT set, where it
-# has one name, so the rename never fired (0 rows on all four CMP15 tables) while
+# has one name, so the rename never fired (0 rows on all four RUN15 tables) while
 # the plot and its caption said it had. It belongs in the 10x analysis code.
 #
 # Somatic hypermutation is taken as 100 - v_identity, which is the V-region

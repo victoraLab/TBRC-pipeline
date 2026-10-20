@@ -5,7 +5,7 @@
 # Until this existed the only way to re-annotate, re-report or re-package a run
 # was to recompute it from FASTQ, because the final stage's cleanup deletes the
 # per-well tree its Snakemake rule depends on (handoff 2026-09-17, section 2).
-# It is what an IgBLAST database or panel fix needs, and what CMP15_kappa_vsearch
+# It is what an IgBLAST database or panel fix needs, and what RUN15_kappa_vsearch
 # was rerun from scratch for.
 #
 # The previous archive, report, tables and QC are copied to

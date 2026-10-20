@@ -130,7 +130,7 @@ EFFECTIVE_IGBLAST_DATA="${IGBLAST_DATA:-${INHERITED_IGBLAST_DATA}}"
 #   full  -> everything light has, plus the per-plate PNG expansions of the
 #            figures already in those PDFs.
 # The untrimmed FASTA was full-only from 24 Aug to Oct 2026, on the mistaken
-# premise that archives never carried it; CMP12-CMP14's did, users relied on it,
+# premise that archives never carried it; RUN12-RUN14's did, users relied on it,
 # and at ~3% of a light archive it is the only delivered file that shows what
 # the primer trim removed.
 # An older sample.json has no archive_scope field at all. Rather than silently
@@ -170,7 +170,7 @@ fi
 # luka_light preprocessing already stripped the 5' handle inside
 # split_fasta.sh, so running the same cutadapt again here can only destroy
 # data: --discard-untrimmed would throw away every read whose handle is
-# already gone. The Jan-2026 CMu/CMP10 run is the worked example -- 3,411
+# already gone. The Jan-2026 RUN10 run is the worked example -- 3,411
 # assembled sequences went in, 417 came out, and exactly one of those was
 # longer than 200 nt. That still holds for classic_luka and tiago_sulkseq.
 # tiago_vsearch now clusters on trimmed copies but delivers the reads whole,
@@ -345,7 +345,7 @@ if [[ "${RUN_IGBLAST,,}" == "true" && -f "${IMGT_READY_FASTA_PATH}" && -f "${REC
                 ;;
             widened)
                 # A single-locus panel on a plate that carries another locus.
-                # CMP15 was submitted as igh and was 62% kappa; every kappa
+                # RUN15 was submitted as igh and was 62% kappa; every kappa
                 # sequence was forced onto an IGHV gene and delivered.
                 echo "Receptor check: the plate carries loci the declared panel does not. Panel widened from '${IGBLAST_PANEL:-ig_all}' to '${RECEPTOR_APPLIED}'." >&2
                 IGBLAST_PANEL="${RECEPTOR_APPLIED}"
@@ -378,7 +378,7 @@ if [[ "${RUN_IGBLAST,,}" == "true" && -f "${IMGT_READY_FASTA_PATH}" && -f "${REC
 
     # The species, judged the same way. A plate whose heavy chains were human
     # went out annotated as mouse at 75% V identity with "completed" on the
-    # report (CMP15_heavy). When another species wins decisively the check
+    # report (RUN15_heavy). When another species wins decisively the check
     # names it and, in auto mode, the run is annotated against it. When the
     # loci need different sets -- one locus per species, or a knocked-in V on
     # the host's D and J -- the check returns a plan per locus and the
@@ -427,7 +427,7 @@ CLONALITY_REASON="Clonality was not requested for this run."
 
 # How well the delivered sequences match the germline set they were annotated
 # with. A wrong species or a wrong strain does not fail: it delivers a table
-# at 75% identity with every record "annotated" (CMP15_heavy, human heavy
+# at 75% identity with every record "annotated" (RUN15_heavy, human heavy
 # chains against mouse germlines). Real repertoires sit above 90% even with
 # heavy somatic mutation, so a median this low is a wrong reference, not
 # biology, and the report has to say so.
@@ -570,7 +570,7 @@ if [[ "${RUN_IGBLAST,,}" == "true" ]]; then
         # before assembly. That is the F_106 Vk primer on a kappa read, but the
         # heavy primer is the handle itself, so on a heavy read the 23 nt are
         # template: FR1 nt 24-46. A mixed plate lets heavy reads through the
-        # handle filter (CMP15_kappa: 424 records). Count them so the report can
+        # handle filter (RUN15_kappa: 424 records). Count them so the report can
         # say so. tiago_vsearch no longer has the problem (above).
         if [[ "${PRETRIMMED}" == "true" ]]; then
             LUKA_LIGHT_HEAVY="$(awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == "v_call") c = i; next }
@@ -582,7 +582,7 @@ if [[ "${RUN_IGBLAST,,}" == "true" ]]; then
         # 64 is run_igblast.sh's own "not set up on this host" code. It used to
         # be 2, which BLAST+ also returns for a database error, so a real abort
         # was filed under "skipped" and the run was delivered without its
-        # annotation (CMP15_kappa, September 2026).
+        # annotation (RUN15_kappa, September 2026).
         if [[ "${IGBLAST_STATUS}" -eq 64 ]]; then
             echo "IGBlast skipped because server-side dependencies or database paths are not configured." >&2
             IGBLAST_STATE="skipped"

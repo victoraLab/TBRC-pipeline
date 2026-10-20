@@ -55,7 +55,7 @@ fi
 # line below never passed them to sbatch, so every rule inherited the partition
 # default instead: DefaultTime on the cluster partition is TEN MINUTES. Any step that ran
 # longer was killed with "DUE TO TIME LIMIT" no matter what cluster.json said.
-# CMP13's demultiplexing takes about ten and a half minutes, which made it a coin
+# RUN13's demultiplexing takes about ten and a half minutes, which made it a coin
 # flip -- it passed once and timed out on the next identical run. Larger runs
 # would have failed outright and looked like pipeline errors.
 #

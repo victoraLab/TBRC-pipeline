@@ -143,7 +143,7 @@ rule wells_vsearch:
     Clustering sees each read without its 5' primer footprint, and the delivered
     centroid is that read whole again (restore_centroid_reads.py): the degenerate
     kappa primer otherwise split one clone into several clusters and called the
-    well multiclonal (CMP15: 153 of 186 such kappa wells)."""
+    well multiclonal (RUN15: 153 of 186 such kappa wells)."""
     input:
         sentinel=rules.demux_vsearch.output.sentinel,
     output:

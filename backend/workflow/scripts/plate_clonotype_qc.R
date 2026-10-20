@@ -99,7 +99,7 @@ if (!is.na(clonality_col)) {
 
   # Gene of the first call, as the clonality package keys clones: the raw
   # strings carry tie lists and allele numbers, which split one clone whenever
-  # a tie resolves differently in two wells (test results/igkj1-2026-10-19/).
+  # a tie resolves differently in two wells (the lab's validation notes).
   gene_only <- function(x) sub("\\*.*$", "", sub(",.*$", "", x))
   v_val <- gene_only(trimws(as.character(input_df[[v_call_col]])))
   j_val <- gene_only(trimws(as.character(input_df[[j_call_col]])))

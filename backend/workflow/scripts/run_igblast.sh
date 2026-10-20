@@ -17,7 +17,7 @@ IGBLAST_BIN="${IGBLAST_BIN:-igblastn}"
 # as a skip rather than a failure. It used to be 2, and BLAST+ also exits 2 on
 # any database error, so a run whose IgBLAST aborted mid-way was recorded as
 # "skipped: databases not configured" and delivered with an empty igblast/
-# folder. CMP15_kappa, September 2026, is the worked example. 64 is EX_USAGE
+# folder. RUN15_kappa, September 2026, is the worked example. 64 is EX_USAGE
 # from sysexits.h; BLAST+ uses 0-4 and 255.
 SKIP_EXIT=64
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -161,7 +161,7 @@ fi
 # out does not skip the D search: igblastn falls back to its built-in default
 # name (<organism>_gl_D), fails to find it, and aborts. Lend it this species'
 # heavy-chain D set instead; light-chain reads simply do not align to it.
-# Measured on CMP15_kappa: the V calls and the locus column are identical with
+# Measured on RUN15_kappa: the V calls and the locus column are identical with
 # and without the lent set, and the abort is gone.
 if [[ -z "${DB_D}" || ! -f "${DB_D}.nhr" ]] && [[ "${IG_SEQTYPE}" == "Ig" ]]; then
     for fallback_panel in igh ig_all; do

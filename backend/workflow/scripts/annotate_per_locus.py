@@ -3,7 +3,7 @@
 
 IgBLAST takes one V, one D and one J database per run, and the receptor check
 could only pick one species for a whole plate. Neither fits a plate whose chains
-come from different germline sets. On CMP15 the kappa chains are mouse and the
+come from different germline sets. On RUN15 the kappa chains are mouse and the
 heavy chains are a human IGHV1-69 rearranged to mouse D and J: annotated as
 mouse, the heavy V matched at 75%; annotated as human, the mouse JH matched at
 89% and FR4 looked 13% mutated. Both went out as "completed".
@@ -14,12 +14,12 @@ plate needs one. This follows it:
   1. Annotate every sequence as the declared species, as a plain run would, and
      as every other V species in the plan. Each sequence's locus comes from
      whichever of those V calls scores best. From the declared table alone, 34
-     of CMP15's heavy chains read as another locus: against mouse germlines a
+     of RUN15's heavy chains read as another locus: against mouse germlines a
      human V aligns at 75% and can lose to nothing at all.
   2. A locus whose V and J species agree takes its rows from that species'
      table. A locus that needs both is run again: V database and FR/CDR
      definitions (-organism) from the V species, D and J databases and J frames
-     (the auxiliary file) from the D-J species. On CMP15 that gives the heavy
+     (the auxiliary file) from the D-J species. On RUN15 that gives the heavy
      chains 98% median J identity and FR4 WGQGTLVTVSA (mouse JH3).
   3. Write one table, one row per query in input order like a plain IgBLAST
      run, with a germline_set column naming the set each row was called against.

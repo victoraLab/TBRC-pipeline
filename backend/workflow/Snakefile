@@ -141,7 +141,7 @@ SAMPLE = resolve_sample_name(samples_df, READ1_GZ, READ2_GZ)
 
 
 # A sample.json copied from an earlier run keeps that run's sample_name, and the
-# field wins over everything: one CMP15 attempt was labelled CMP14new from end
+# field wins over everything: one RUN15 attempt was labelled RUN14new from end
 # to end (handoff 2026-09-17, section 6). The app and `tbrc run` write
 # sample_name as the last part of dest; the benchmark writes the name the FASTQ
 # give. A sample_name that is neither is a stale copy, so stop before any work.
@@ -229,8 +229,8 @@ ARCHIVE_SCOPE=resolve_archive_scope(samples_df)
 
 
 # An optional results subfolder on the storage server, so several passes over one
-# plate land together: CMP15's four runs were pushed side by side into
-# results/CMu/ and moved into results/CMu/CMP15/ by hand. It becomes a remote
+# plate land together: RUN15's four runs were pushed side by side into
+# results/jdoe/ and moved into results/RUN15/ by hand. It becomes a remote
 # path, so anything but one plain path segment stops the run here. 'none', not
 # an empty string, for the same command-line reason as archive_scope.
 def resolve_run_group(df):

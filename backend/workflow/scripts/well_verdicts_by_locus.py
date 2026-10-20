@@ -3,7 +3,7 @@
 
 rank_wells.py judges a well on all its clusters together, so a well holding one
 cell's heavy chain and its kappa chain -- the normal case on a mixed plate -- is
-called multiclonal: 194 of CMP15_all's 331 wells, against 53 on the
+called multiclonal: 194 of RUN15_all's 331 wells, against 53 on the
 light-filtered run (handoff 2026-09-17, section 4). Only the annotation knows
 which locus a record is, so this runs after it: the delivered records of each
 well are grouped by locus (the prefix of the first V call) and ranked within it,

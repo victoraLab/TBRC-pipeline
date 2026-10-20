@@ -34,7 +34,7 @@ tiago_vsearch:
       # longest-CDR3 products, exactly the ones worth keeping. 12 admitted them
       # but still lost IgG heavy chains: their reverse primer sits ~100 nt into
       # CH1, so a VH1-69 IgG product is a ~512-nt insert with 9 nt of overlap
-      # (germline-anchored, CMP15, test results/cmp15-lost-wells-2026-10-19/).
+      # (germline-anchored, RUN15, the lab's validation notes).
       # At 9 all 14,666 "overlap too short" pairs merge, 99.6% IGH and 83%
       # productive against 78% for ov12 merges >= 500 nt; 2 wells come back and
       # 17 more get their real heavy chain at rank 1; no pair that merged at 12
@@ -83,7 +83,7 @@ tiago_vsearch:
       # Bases after the 5' handle hidden from clustering (not cut from what is
       # delivered). The kappa primer is degenerate there, and left in it split
       # one clone into clusters that differ only in primer: 752 of the 770
-      # differences between CMP15's false "multiclonal" kappa cluster pairs.
+      # differences between RUN15's false "multiclonal" kappa cluster pairs.
       # On a heavy read the same stretch is template, so masking it costs a
       # little resolution and deletes nothing.
       cluster_mask_nt: 23
@@ -94,7 +94,7 @@ tiago_vsearch:
       # by then). The B-set handle IS the heavy forward primer -- F_007 covers
       # FR1 nt 1-23 -- so IGH loses nothing more; the kappa primer F_106 adds
       # 23 nt after the handle, 19% mismatched to germline against 1.8% for the
-      # rest of V (CMP15, test results/cmp15-fr4-2026-10-19/). IGL is not
+      # rest of V (RUN15, the lab's validation notes). IGL is not
       # measured yet and is left whole. Empty means no per-locus cut.
       primer_footprint: IGK=23
 
@@ -186,7 +186,7 @@ tiago_nanopore:
       min_base_fraction: 0.70
     final:
       # The demultiplexer cuts through the 31-nt B-set handle (GGG + EcoRI + the
-      # F_007 heavy primer), so no heavy consensus keeps a primer (S86C34, M1:
+      # F_007 heavy primer), so no heavy consensus keeps a primer (two heavy-chain libraries:
       # V aligns from germline nt 24-32), while a kappa one keeps F_106 at its
       # 5' end: kappa inserts begin ATATTGTGATGACACAG, FR1 from nt 2 as F_106
       # does. Measured on a kappa MinION test library with trimming on: V
@@ -278,7 +278,7 @@ tiago_sulkseq:
       # Bases after the 5' handle hidden from clustering (not cut from what is
       # delivered). The kappa primer is degenerate there, and left in it split
       # one clone into clusters that differ only in primer: 752 of the 770
-      # differences between CMP15's false "multiclonal" kappa cluster pairs.
+      # differences between RUN15's false "multiclonal" kappa cluster pairs.
       # On a heavy read the same stretch is template, so masking it costs a
       # little resolution and deletes nothing.
       cluster_mask_nt: 23
@@ -289,7 +289,7 @@ tiago_sulkseq:
       # by then). The B-set handle IS the heavy forward primer -- F_007 covers
       # FR1 nt 1-23 -- so IGH loses nothing more; the kappa primer F_106 adds
       # 23 nt after the handle, 19% mismatched to germline against 1.8% for the
-      # rest of V (CMP15, test results/cmp15-fr4-2026-10-19/). IGL is not
+      # rest of V (RUN15, the lab's validation notes). IGL is not
       # measured yet and is left whole. Empty means no per-locus cut.
       primer_footprint: IGK=23
 
@@ -359,7 +359,7 @@ classic_luka:
       # by then). The B-set handle IS the heavy forward primer -- F_007 covers
       # FR1 nt 1-23 -- so IGH loses nothing more; the kappa primer F_106 adds
       # 23 nt after the handle, 19% mismatched to germline against 1.8% for the
-      # rest of V (CMP15, test results/cmp15-fr4-2026-10-19/). IGL is not
+      # rest of V (RUN15, the lab's validation notes). IGL is not
       # measured yet and is left whole. Empty means no per-locus cut.
       primer_footprint: IGK=23
 

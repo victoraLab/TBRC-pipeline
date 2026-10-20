@@ -764,7 +764,7 @@ app_action_button <- function(inputId, label, ...) {
 # "Run on this server" only works where a sibling backend/ directory and the
 # workflow tools actually exist. On a Shiny host that received only frontend/,
 # neither is true -- which is why the toggle produced 7 raw shell errors for
-# Sandra and CMu before it was gated.
+# two users before it was gated.
 LOCAL_BACKEND_DIR <- normalizePath(file.path(APP_DIR, "..", "backend"), winslash = "/", mustWork = FALSE)
 
 local_backend_status <- function() {
@@ -800,7 +800,7 @@ igblast_species_choices <- c(
 
 # ig_light is no longer offered. ig_all carries the same 168 IGKV and 19 IGLV
 # germlines, and a light-only panel on a plate that also holds heavy chains
-# forces every heavy sequence onto an IGKV gene (CMP15_kappa: 533 of 1,425).
+# forces every heavy sequence onto an IGKV gene (RUN15_kappa: 533 of 1,425).
 # The backend still accepts it from an older sample.json, and the receptor
 # check widens it to ig_all when the plate warrants.
 igblast_panel_choices <- c(
