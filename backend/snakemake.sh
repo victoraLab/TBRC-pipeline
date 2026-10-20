@@ -1,9 +1,11 @@
 #!/bin/bash
 set -uo pipefail
 
-# Every submission shares this one working directory, so it also shares one
-# .snakemake state directory. Two failure modes followed from that, and between
-# them they caused 12 of the 30 recorded run failures:
+# Launchers call this through run_isolated.sh, which gives every run its own
+# working directory. Until October 2026 every submission ran here in the
+# pipeline root instead and shared one .snakemake state directory. Two failure
+# modes followed from that, and between them they caused 12 of the 30 recorded
+# run failures:
 #
 #   * an interrupted run leaves output files marked incomplete, and the NEXT
 #     user's run refuses to start until someone passes --rerun-incomplete;
@@ -11,7 +13,8 @@ set -uo pipefail
 #     start with "Directory cannot be locked" until someone unlocks it.
 #
 # Neither is the submitting user's fault and neither is fixable from the web UI,
-# so clear both here before starting.
+# so clear both here before starting. Both still apply inside a per-run
+# directory: a resubmitted run reuses its directory and its leftovers.
 
 WORKDIR="$(cd "$(dirname "$0")" && pwd)"
 cd "${WORKDIR}"
@@ -66,8 +69,11 @@ if [[ -f "${WORKDIR}/config/site.env" ]]; then
 fi
 
 # --rerun-incomplete: redo anything a previous interrupted run left half-written.
+# Extra arguments go to snakemake as they are; rerun_final.sh uses them to ask
+# for the refinal target instead of the whole run.
 snakemake \
     -j 9999 \
     --rerun-incomplete \
     --cluster-config config/cluster.json \
-    --cluster "sbatch --partition {cluster.partition} --job-name {cluster.name} -o {cluster.output} -e {cluster.error} --ntasks-per-node 1 --time {cluster.time} --mem {cluster.mem} --cpus-per-task {cluster.cpus_per_task}"
+    --cluster "sbatch --partition {cluster.partition} --job-name {cluster.name} -o {cluster.output} -e {cluster.error} --ntasks-per-node 1 --time {cluster.time} --mem {cluster.mem} --cpus-per-task {cluster.cpus_per_task}" \
+    "$@"

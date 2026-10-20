@@ -97,8 +97,12 @@ if (!is.na(clonality_col)) {
     stop("Input TSV is missing both clonality labels and the IGBlast columns needed to derive clonotypes.", call. = FALSE)
   }
 
-  v_val <- trimws(as.character(input_df[[v_call_col]]))
-  j_val <- trimws(as.character(input_df[[j_call_col]]))
+  # Gene of the first call, as the clonality package keys clones: the raw
+  # strings carry tie lists and allele numbers, which split one clone whenever
+  # a tie resolves differently in two wells (test results/igkj1-2026-10-19/).
+  gene_only <- function(x) sub("\\*.*$", "", sub(",.*$", "", x))
+  v_val <- gene_only(trimws(as.character(input_df[[v_call_col]])))
+  j_val <- gene_only(trimws(as.character(input_df[[j_call_col]])))
   junction_val <- gsub("[^A-Za-z]", "", trimws(as.character(input_df[[junction_col]])))
 
   clonotype_family <- paste(v_val, j_val, sep = "|")

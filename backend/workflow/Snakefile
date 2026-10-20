@@ -138,6 +138,34 @@ def resolve_sample_name(df, read1_path, read2_path):
     return sample_name_from_reads(read1_path, read2_path)
 
 SAMPLE = resolve_sample_name(samples_df, READ1_GZ, READ2_GZ)
+
+
+# A sample.json copied from an earlier run keeps that run's sample_name, and the
+# field wins over everything: one CMP15 attempt was labelled CMP14new from end
+# to end (handoff 2026-09-17, section 6). The app and `tbrc run` write
+# sample_name as the last part of dest; the benchmark writes the name the FASTQ
+# give. A sample_name that is neither is a stale copy, so stop before any work.
+def check_sample_name(sample, df, read1_path, read2_path):
+    if 'sample_name' not in df.columns:
+        return
+    raw = df['sample_name'].iloc[0]
+    if raw is None or str(raw).strip().lower() in ('', 'nan', 'none', 'na'):
+        return
+    dest = str(df['dest'].iloc[0]).strip().rstrip('/') if 'dest' in df.columns else ''
+    try:
+        from_reads = sample_name_from_reads(read1_path, read2_path)
+    except ValueError:
+        from_reads = None
+    if sample in (os.path.basename(dest), from_reads):
+        return
+    raise ValueError(
+        "sample_name {!r} in {} matches neither the results folder {!r} nor the FASTQ "
+        "files ({!r}). It looks copied from another run's sample.json: correct it, or "
+        "remove the field to name the run after the FASTQ.".format(
+            sample, DATA_TABLE, dest, from_reads))
+
+
+check_sample_name(SAMPLE, samples_df, READ1_GZ, READ2_GZ)
 #SAMPLE=list(samples_df['basename'])
 SOUR=list(samples_df['source'])
 DEST=list(samples_df['dest'])
@@ -149,7 +177,7 @@ SERVER_SSH_PORT=list(samples_df['server_ssh_port'])
 SERVER_TRANSFER_MODE=list(samples_df['server_transfer_mode'])
 BARC=list(samples_df['primer_set'])
 HEAD=list(samples_df['sequence_number'])
-PIPE=list(samples_df['pipeline'])
+PIPE=list(samples_df['pipeline']) if 'pipeline' in samples_df.columns else [''] * len(samples_df.index)
 METH=list(samples_df['luka_light_protocol'])
 RUN_IGBLAST=list(samples_df['run_igblast'])
 RUN_CLONALITY=list(samples_df['run_clonality'])
@@ -165,8 +193,22 @@ IGBLAST_AUX=list(samples_df['igblast_auxiliary_data'])
 KEEP=list(samples_df['keep_raw'])
 TRIM=list(samples_df['trim_seq'])
 TRIM_PRIMERS=list(samples_df['trim_primers'])
-ARCHIVE_FORMAT=list(samples_df['archive_format']) if 'archive_format' in samples_df.columns else ['zip'] * len(samples_df.index)
-ARCHIVE_EXT=[fmt if fmt == 'zip' else 'tar.gz' for fmt in ARCHIVE_FORMAT]
+# zip or tar.gz, decided once here and handed to final.script.sh, so the file
+# Snakemake expects and the file the script writes cannot disagree. Before, a
+# blank field arrived as NaN: this side expected <sample>.tar.gz (anything not
+# 'zip' was taken as tar.gz) while the script fell back to zip, and wrote a zip
+# under the .tar.gz name.
+def resolve_archive_format(df):
+    if 'archive_format' not in df.columns:
+        return ['zip'] * len(df.index)
+    formats = []
+    for raw in df['archive_format']:
+        value = '' if raw is None else str(raw).strip().lower()
+        formats.append('tar.gz' if value in ('tar.gz', 'targz', 'tgz') else 'zip')
+    return formats
+
+ARCHIVE_FORMAT=resolve_archive_format(samples_df)
+ARCHIVE_EXT=ARCHIVE_FORMAT
 
 
 # Which outputs go into the delivered archive. sample.json files written before
@@ -184,6 +226,27 @@ def resolve_archive_scope(df):
     return scopes
 
 ARCHIVE_SCOPE=resolve_archive_scope(samples_df)
+
+
+# An optional results subfolder on the storage server, so several passes over one
+# plate land together: CMP15's four runs were pushed side by side into
+# results/CMu/ and moved into results/CMu/CMP15/ by hand. It becomes a remote
+# path, so anything but one plain path segment stops the run here. 'none', not
+# an empty string, for the same command-line reason as archive_scope.
+def resolve_run_group(df):
+    groups = []
+    for raw in (df['run_group'] if 'run_group' in df.columns else [None] * len(df.index)):
+        value = '' if raw is None else str(raw).strip()
+        if not value or value.lower() in ('nan', 'none', 'na'):
+            groups.append('none')
+        elif re.fullmatch(r'[A-Za-z0-9._-]+', value) and value not in ('.', '..') and not value.startswith('-'):
+            groups.append(value)
+        else:
+            raise ValueError("run_group {!r} is not a plain folder name (letters, digits, dot, "
+                             "underscore, hyphen).".format(value))
+    return groups
+
+RUN_GROUP=resolve_run_group(samples_df)
 
 
 # Whether the run may correct a mismatched IgBLAST panel. 'auto' detects and
@@ -214,7 +277,14 @@ RECEPTOR_CHECK=resolve_receptor_check(samples_df)
 # been classic_luka by default rather than by choice.
 import yaml
 
-PIPELINE = str(PIPE[0]).strip() if PIPE and str(PIPE[0]).strip() else "classic_luka"
+# A blank form field reaches pandas as NaN, and str(NaN) is 'nan', which is not
+# blank: the run then died on "Unknown pipeline 'nan'" instead of taking the
+# default. Same sentinels as resolve_sample_name.
+def resolve_pipeline(values):
+    value = '' if not values or values[0] is None else str(values[0]).strip()
+    return value if value and value.lower() not in ('nan', 'none', 'na') else "classic_luka"
+
+PIPELINE = resolve_pipeline(PIPE)
 
 PIPELINE_RULES = {
     "classic_luka": ["rules/trim_reads.smk", "rules/pandaseq.smk", "rules/genfasta.smk"],

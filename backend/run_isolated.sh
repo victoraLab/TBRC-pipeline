@@ -12,7 +12,12 @@
 # (workflow, config, barcodes, igblast databases) and its own .snakemake, logs
 # and results. Nothing is copied, so the cost is a few symlinks per run.
 #
-# Usage: run_isolated.sh <run-name> <DATA_TABLE> <INPUTPATH>
+# goServer.bash, goUpload.bash and `tbrc run` all launch through this script,
+# named <user>-<run>, so a second submission no longer waits for the first.
+# Two runs that would write the same results/<user>/<sample>/ still collide;
+# give them different run names.
+#
+# Usage: run_isolated.sh <run-name> <DATA_TABLE> <INPUTPATH> [snakemake arguments...]
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAME="$1"; TABLE="$2"; INPUT="$3"
@@ -33,4 +38,19 @@ mkdir -p "${WORK}/logs" "${WORK}/slurm_outs" "${WORK}/.snakemake"
 
 cd "${WORK}"
 export DATA_TABLE="${TABLE}" INPUTPATH="${INPUT}"
-exec ./snakemake.sh
+# What this run was started with, so rerun_final.sh can find it again.
+printf 'DATA_TABLE=%q\nINPUTPATH=%q\n' "${TABLE}" "${INPUT}" > run.env
+
+# A detached launch (dispatch_detached in frontend/scripts/common.sh) names an
+# attempt. The driver then outlives the ssh session that started it, so its exit
+# code is left in attempts/<attempt>.exit for the launcher to poll. Written
+# after the driver has finished, so the log is complete once the file exists.
+if [[ -n "${TBRC_ATTEMPT:-}" ]]; then
+    mkdir -p attempts
+    set +e
+    ./snakemake.sh "${@:4}"
+    status=$?
+    echo "${status}" > "attempts/${TBRC_ATTEMPT}.exit"
+    exit "${status}"
+fi
+exec ./snakemake.sh "${@:4}"

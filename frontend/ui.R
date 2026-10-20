@@ -341,7 +341,9 @@ shinyUI(fluidPage(theme = shinytheme("flatly"),
           outline = TRUE,
           animation = "pulse"
         ),
-        tags$div(class = "card-note", "Light ships the imgt.ready FASTA, every QC/IGBlast/clonality table and the multi-page QC PDFs. Full adds the untrimmed assembled FASTA and one PNG per plate."),
+        tags$div(class = "card-note", "Light ships the imgt.ready FASTA, the untrimmed assembled FASTA, every QC/IGBlast/clonality table and the multi-page QC PDFs. Full adds one PNG per plate."),
+        textInput("run_group", "Results subfolder on the storage server (optional)", value = ""),
+        tags$div(class = "card-note", "Give several runs of one plate the same name here (for example CMP15) and their archives land together in results/<user>/<name>/ instead of side by side in results/<user>/."),
         app_radio_buttons("trim_primers", "Trim primers", choices = c(TRUE, FALSE), selected = TRUE, status = "success", outline = TRUE, animation = "pulse"),
         uiOutput("run_local_control"),
         # On by default. Annotation is why most people submit a run, and leaving

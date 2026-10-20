@@ -4,16 +4,16 @@
 # read depth. These answer "what is in it": which V genes were used, how mutated
 # the sequences are, how long the CDR3s are, and what fraction is productive.
 #
-# Two lab conventions are enforced here rather than left to whoever reads the
-# table afterwards:
+# One convention is enforced here rather than left to whoever reads the table
+# afterwards: only the first allele of a call is kept. IgBLAST returns
+# comma-separated alleles by descending score, so counting the raw string
+# treats "IGHV1-9*01" and "IGHV1-9*01,IGHV1-9*02" as different genes.
 #
-#   IGHV3-6CHI1-64 is collapsed to IGHV3-6. They are one gene under two names --
-#   10x annotates the long form, bulk the short -- and not collapsing them splits
-#   one gene across two bars and quietly distorts every V usage comparison.
-#
-#   Only the first allele of a call is kept. IgBLAST returns comma-separated
-#   alleles by descending score, so counting the raw string treats "IGHV1-9*01"
-#   and "IGHV1-9*01,IGHV1-9*02" as different genes.
+# The MiniMouse IGHV3-6CHI1-64 -> IGHV3-6 collapse is deliberately NOT applied.
+# It exists because the 10x cellranger reference and bulk annotation name that
+# gene differently; TBRC annotates with IgBLAST against one IMGT set, where it
+# has one name, so the rename never fired (0 rows on all four CMP15 tables) while
+# the plot and its caption said it had. It belongs in the 10x analysis code.
 #
 # Somatic hypermutation is taken as 100 - v_identity, which is the V-region
 # divergence from germline that IgBLAST reports directly. On nanopore that number
@@ -33,12 +33,10 @@ rep_read_airr <- function(path) {
   if (is.null(out) || !nrow(out)) NULL else out
 }
 
-# One gene per call, lab collapse applied.
+# One gene per call: first allele, allele suffix dropped.
 rep_gene <- function(x) {
   g <- sub(",.*$", "", ifelse(is.na(x), "", as.character(x)))
-  g <- sub("\\*.*$", "", g)
-  g[g == "IGHV3-6CHI1-64"] <- "IGHV3-6"
-  g
+  sub("\\*.*$", "", g)
 }
 
 rep_truthy <- function(x) toupper(substr(as.character(x), 1, 1)) == "T"
@@ -76,7 +74,7 @@ rep_plot_vgene <- function(airr, top_n = 20, theme_extra = NULL) {
     geom_col(fill = "#2F5FA8") + coord_flip() +
     labs(x = NULL, y = "Percent of sequences",
          title = sprintf("V gene usage (top %d of %d genes)", nrow(d), total_genes <- length(unique(rep_gene(airr$v_call)))),
-         subtitle = "IGHV3-6CHI1-64 collapsed into IGHV3-6; first allele only") +
+         subtitle = "First allele of each call") +
     theme_bw()
   if (!is.null(theme_extra)) p <- p + theme_extra
   p + theme(axis.text.y = element_text(size = 9))

@@ -113,3 +113,63 @@ validate_path_segment() {
         exit 1
     fi
 }
+
+# Start a run's Snakemake driver on the login node detached from this ssh
+# session, then follow it until it exits, relaying its output as it grows and
+# exiting with its status. The driver used to run in the foreground of the ssh
+# command, so a dropped connection or a restart of the app host killed a run
+# that was otherwise healthy. run_isolated.sh writes the exit code to
+# .parallel/<key>/attempts/<attempt>.exit after the driver finishes; that file,
+# not the ssh session, says when the run is over. A failed poll (a network
+# blip, a login node rebooting) is not a verdict on the run and is retried. A
+# driver that is gone without leaving that file (killed with the login node,
+# say) would be waited for forever, so three polls in a row that find neither a
+# live driver nor an exit code end the wait as a failure.
+#
+# Usage: dispatch_detached SSH_HOST PIPELINE_ROOT PATH_PREFIX SNAKEMAKE_ENV RUN_KEY DATA_TABLE INPUTPATH
+dispatch_detached() {
+    local ssh_host="$1" root="$2" path_prefix="$3" env_name="$4" key="$5" table="$6" inputs="$7"
+    local attempt work log exit_file seen=0 poll="${TBRC_POLL_SECONDS:-60}"
+    attempt="$(date +%Y%m%d-%H%M%S)-$$"
+    work=".parallel/${key}"
+    log="${work}/attempts/${attempt}.log"
+    exit_file="${work}/attempts/${attempt}.exit"
+
+    ssh "${ssh_host}" "cd $(shq "${root}") \
+        && export PATH=$(shq "${path_prefix}") \
+        && conda activate $(shq "${env_name}") \
+        && mkdir -p $(shq "${work}/attempts") \
+        && { TBRC_ATTEMPT=$(shq "${attempt}") setsid nohup ./run_isolated.sh $(shq "${key}") \
+               $(shq "${table}") $(shq "${inputs}") > $(shq "${log}") 2>&1 < /dev/null & } \
+        && echo \"Run ${key} started on ${ssh_host}, attempt ${attempt}.\""
+
+    local chunk body code="" gone=0 pidfile="${work}/.snakemake/tbrc-driver.pid"
+    while [[ -z "${code}" ]]; do
+        sleep "${poll}"
+        # The exit file is read before the log: it is written after the last
+        # line of output, so a log read after seeing it is complete.
+        if chunk="$(ssh -o BatchMode=yes -o ConnectTimeout=20 "${ssh_host}" "cd $(shq "${root}") \
+                && e=\$(cat $(shq "${exit_file}") 2>/dev/null); tail -n +$((seen + 1)) $(shq "${log}") 2>/dev/null; \
+                [ -n \"\$e\" ] && echo __TBRC_EXIT__=\$e; \
+                p=$(shq "${pidfile}"); [ -f \"\$p\" ] && kill -0 \$(cat \"\$p\") 2>/dev/null && echo __TBRC_ALIVE__; true")"; then
+            body="$(printf '%s\n' "${chunk}" | grep -v '^__TBRC_EXIT__=\|^__TBRC_ALIVE__$' || true)"
+            if [[ -n "${body}" ]]; then
+                printf '%s\n' "${body}"
+                seen=$((seen + $(printf '%s\n' "${body}" | wc -l)))
+            fi
+            code="$(printf '%s\n' "${chunk}" | sed -n 's/^__TBRC_EXIT__=//p' | tail -1)"
+            if [[ -z "${code}" ]] && ! grep -q '^__TBRC_ALIVE__$' <<< "${chunk}"; then
+                gone=$((gone + 1))
+                if (( gone >= 3 )); then
+                    echo "The driver for ${key} is no longer running and left no exit status (attempt ${attempt}); treating the run as failed. Its log: ${root}/${log}" >&2
+                    return 70
+                fi
+            else
+                gone=0
+            fi
+        else
+            echo "Could not reach ${ssh_host} to check on ${key}; trying again." >&2
+        fi
+    done
+    return "${code}"
+}

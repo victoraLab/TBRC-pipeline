@@ -65,6 +65,12 @@ fi
 # before Snakemake starts.
 DATA_TABLE="data/runs/${USER_ID}/${RUN_NAME}/sample.json"
 INPUTPATH="data/runs/${USER_ID}/${RUN_NAME}/"
+# Each run gets its own working directory on the backend
+# (backend/run_isolated.sh), so a second submission is no longer refused by the
+# first one's Snakemake lock. User plus run name, because two users may pick
+# the same run name; resubmitting the same run while it is live is still
+# refused, by that directory's own driver guard.
+RUN_KEY="${USER_ID}-${RUN_NAME}"
 
 if [[ "${LOCAL_RUN}" == "1" ]]; then
   # The app gates this toggle on capability, but guard here too: a deploy that
@@ -101,7 +107,7 @@ if [[ "${LOCAL_RUN}" == "1" ]]; then
     conda activate "${SNAKEMAKE_ENV}"
   fi
 
-  ./snakemake.sh
+  ./run_isolated.sh "${RUN_KEY}" "${DATA_TABLE}" "${INPUTPATH}"
   exit 0
 fi
 
@@ -181,4 +187,5 @@ rsync -a -P "${RUNS_DIR}/${USER_ID}/${RUN_NAME}/" "${DTN_HOST}:${PIPELINE_ROOT}/
 # hosts once it passed through SSH quoting layers.
 INPUT_BYTES="$(ssh "${DTN_HOST}" "find '${PIPELINE_ROOT}/data/runs/${USER_ID}/${RUN_NAME}' -maxdepth 2 -type f ! -path '*/@eaDir/*' -printf '%f\t%s\n' | awk -F '\t' '\$1 ~ /\\.fastq(\\.gz)?$/ {sum += \$2} END {print sum + 0}'")"
 echo "TBRC_INPUT_BYTES=${INPUT_BYTES:-0}"
-ssh "${SSH_HOST}" "cd '${PIPELINE_ROOT}' && export PATH='${PATH_PREFIX}' && export DATA_TABLE='${DATA_TABLE}' && export INPUTPATH='${INPUTPATH}' && conda activate '${SNAKEMAKE_ENV}' && ./snakemake.sh"
+dispatch_detached "${SSH_HOST}" "${PIPELINE_ROOT}" "${PATH_PREFIX}" "${SNAKEMAKE_ENV}" \
+  "${RUN_KEY}" "${DATA_TABLE}" "${INPUTPATH}"

@@ -16,13 +16,22 @@ output_dir <- args[2]
 sample_name <- args[3]
 igblast_panel <- if (length(args) >= 4) args[4] else "ig_all"
 
+# The clonality cell model each panel's records need. ig_b6 (mouse B6 Ig
+# germlines) was missing, so its runs were skipped as a "mixed receptor scope".
+# all_receptors does carry both kinds, which one clonality call cannot take:
+# with cell = "B" the TR genes come back unparsed (v_genes NA). It is split by
+# locus below instead of skipped.
 cell_type_for_panel <- function(panel_name) {
-  if (panel_name %in% c("igh", "ig_light", "ig_all")) {
+  if (panel_name %in% c("igh", "ig_light", "ig_all", "ig_b6")) {
     return("B")
   }
 
   if (panel_name %in% c("tra", "trb", "tcr_all")) {
     return("T")
+  }
+
+  if (panel_name == "all_receptors") {
+    return("mixed")
   }
 
   NA_character_
@@ -108,17 +117,41 @@ if (!nrow(clonality_input)) {
   quit(save = "no", status = 2)
 }
 
-clonality_output <- clonality::clonality(
-  data = clonality_input,
-  ident_col = "sequence_id",
-  vgene_col = "v_call",
-  jgene_col = "j_call",
-  cdr3_col = "junction",
-  cell = cell_type,
-  output_original = TRUE,
-  quiet = TRUE,
-  project = sample_name
-)
+call_clones <- function(records, cell) {
+  clonality::clonality(
+    data = records,
+    ident_col = "sequence_id",
+    vgene_col = "v_call",
+    jgene_col = "j_call",
+    cdr3_col = "junction",
+    cell = cell,
+    output_original = TRUE,
+    quiet = TRUE,
+    project = sample_name
+  )
+}
+
+if (identical(cell_type, "mixed")) {
+  is_tcr <- grepl("^TR", clonality_input$v_call)
+  parts <- list(B = clonality_input[!is_tcr, , drop = FALSE],
+                T = clonality_input[is_tcr, , drop = FALSE])
+  parts <- parts[vapply(parts, nrow, integer(1)) > 0]
+  outputs <- lapply(names(parts), function(cell) {
+    out <- call_clones(parts[[cell]], cell)
+    # Each call numbers its clones from 1, so a B clone and a T clone would
+    # otherwise share a label.
+    out$clonality <- paste0(cell, "_", out$clonality)
+    out
+  })
+  columns <- unique(unlist(lapply(outputs, names)))
+  outputs <- lapply(outputs, function(out) {
+    out[setdiff(columns, names(out))] <- NA
+    out[columns]
+  })
+  clonality_output <- do.call(rbind, outputs)
+} else {
+  clonality_output <- call_clones(clonality_input, cell_type)
+}
 
 # clonality 0.10 wrote 19 columns; 0.15 joins the clone label onto the five input
 # columns only and writes 9. Nine of the ten dropped columns repeat another one

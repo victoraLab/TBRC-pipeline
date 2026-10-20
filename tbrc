@@ -251,6 +251,8 @@ def build_sample(cfg, a, run_name, storage=None, server_name=""):
         "trim_seq": trim_seq,
         "keep_raw": flag(a.keep_raw),
         "archive_scope": a.archive_scope,
+        # `tbrc test` builds its namespace by hand, without the --run-group flag.
+        "run_group": getattr(a, "run_group", None) or "",
         "source": source,
         "dest": "results/" + source,
     }
@@ -346,14 +348,15 @@ def cmd_check(a):
             if rc == 0:
                 probe = (
                     "cd {root} 2>/dev/null && echo ROOT=ok || echo ROOT=missing; "
-                    "test -x {root}/snakemake.sh && echo DRIVER=ok || echo DRIVER=missing; "
+                    "test -x {root}/snakemake.sh && test -x {root}/run_isolated.sh && echo DRIVER=ok || echo DRIVER=missing; "
                     "export PATH={prefix}:$PATH; "
                     "conda activate {env} 2>/dev/null && echo ENV=ok || echo ENV=missing; "
                     "command -v snakemake >/dev/null && echo SNAKEMAKE=$(snakemake --version 2>/dev/null | head -1) || echo SNAKEMAKE=missing; "
                     "for t in cutadapt pandaseq fastx_trimmer vsearch igblastn Rscript; do command -v $t >/dev/null && echo TOOL_$t=ok || echo TOOL_$t=missing; done; "
                     "python3 -c 'import pandas' 2>/dev/null && echo PANDAS=ok || echo PANDAS=missing; "
                     "for sp in mouse human; do ls {root}/igblast/work/$sp/ig_all/*_V.nhr >/dev/null 2>&1 && echo PANEL_$sp=ok || echo PANEL_$sp=missing; done; "
-                    "p={root}/.snakemake/tbrc-driver.pid; if [ -f $p ] && kill -0 $(cat $p) 2>/dev/null; then echo ACTIVE=$(cat $p); else echo ACTIVE=none; fi; "
+                    "n=0; for p in {root}/.snakemake/tbrc-driver.pid {root}/.parallel/*/.snakemake/tbrc-driver.pid; do "
+                    "[ -f \"$p\" ] && kill -0 $(cat \"$p\") 2>/dev/null && n=$((n+1)); done; echo ACTIVE=$n; "
                     "echo FREE_KB=$(df -Pk {root} 2>/dev/null | awk 'NR==2{{print $4}}'); "
                     "sinfo -h -o '%P %a' 2>/dev/null | head -1 | sed 's/^/PARTITION=/'"
                 ).format(root=shlex.quote(root), prefix=shlex.quote(prefix), env=shlex.quote(env_name))
@@ -361,7 +364,7 @@ def cmd_check(a):
                 facts = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
                 report("ok" if facts.get("ROOT") == "ok" else "fail", "pipeline root", root,
                        "" if facts.get("ROOT") == "ok" else "cluster.pipeline_root does not exist on the login node.")
-                report("ok" if facts.get("DRIVER") == "ok" else "fail", "snakemake.sh present and executable")
+                report("ok" if facts.get("DRIVER") == "ok" else "fail", "snakemake.sh and run_isolated.sh present and executable")
                 report("ok" if facts.get("ENV") == "ok" else "fail", "conda env '{}'".format(env_name),
                        "" if facts.get("ENV") == "ok" else "", "" if facts.get("ENV") == "ok" else
                        "conda env create -f environment.yml on the cluster, or fix cluster.snakemake_env / path_prefix.")
@@ -376,10 +379,9 @@ def cmd_check(a):
                     report("ok" if ok else "warn", "IgBLAST {} ig_all panel built".format(sp),
                            "" if ok else "not built", "" if ok else
                            "cd {}/igblast && ./setup_igblast_databases.sh {} ig_all".format(root, sp))
-                active = facts.get("ACTIVE", "none")
-                report("ok" if active == "none" else "warn", "another run active on the cluster",
-                       "no" if active == "none" else "yes, driver pid " + active,
-                       "" if active == "none" else "snakemake.sh refuses a second concurrent driver; wait for it.")
+                # Informational: each run has its own working directory, so a live
+                # run no longer blocks a new one.
+                report("ok", "runs active on the cluster", facts.get("ACTIVE", "unknown"))
                 try:
                     free_gb = int(facts.get("FREE_KB", "0")) / 1024 / 1024
                     report("ok" if free_gb > 20 else "warn", "free space under pipeline root", "{:.0f} GB".format(free_gb))
@@ -641,10 +643,12 @@ def cmd_run(a):
                 raise Fail("rsync to the cluster failed (exit {})".format(rc))
             table = "data/runs/{}/{}/sample.json".format(a.user, run_name)
             inputs = "data/runs/{}/{}/".format(a.user, run_name)
-            remote = ("cd {root} && export PATH={prefix} && export DATA_TABLE={table} && export INPUTPATH={inputs} "
-                      "&& conda activate {env} && ./snakemake.sh").format(
+            # Own working directory per run (backend/run_isolated.sh), so a live run
+            # does not refuse this one.
+            remote = ("cd {root} && export PATH={prefix} "
+                      "&& conda activate {env} && ./run_isolated.sh {key} {table} {inputs}").format(
                 root=shlex.quote(root), prefix=shlex.quote(prefix), table=shlex.quote(table),
-                inputs=shlex.quote(inputs), env=shlex.quote(env_name))
+                inputs=shlex.quote(inputs), env=shlex.quote(env_name), key=shlex.quote(a.user + "-" + run_name))
             say("Dispatching {} on {} ...".format(run_name, ssh_host))
             rc, out, _ = ssh(ssh_host, remote, stream=True, log=log)
     elapsed = int(time.time() - started)
@@ -665,12 +669,13 @@ def summarise_failure(output):
     if "Not enough space on the cluster" in output:
         return "The cluster does not have room for this run."
     if "Another Snakemake run" in output:
-        return "Another run is active on the cluster; wait for it and resubmit."
+        return "This run is already active on the cluster; wait for it, or submit under another run name."
     if "Expected exactly one R1 and one R2" in output:
         return "The input folder does not hold exactly one R1 and one R2 FASTQ."
     if "Error in rule" in output:
         m = re.search(r"Error in rule (\w+)", output)
-        return "Rule {} failed; see logs/<run>.{}.*.log on the cluster.".format(m.group(1), m.group(1)) if m else "A rule failed."
+        return ("Rule {} failed; see .parallel/<user>-<run>/logs/<run>.{}.*.log under the pipeline root "
+                "on the cluster.".format(m.group(1), m.group(1))) if m else "A rule failed."
     return "See the backend output above."
 
 
@@ -847,6 +852,8 @@ def add_run_options(p):
     out = p.add_argument_group("output")
     out.add_argument("--archive-format", default=DEFAULTS["archive_format"], choices=("zip", "tar.gz"))
     out.add_argument("--archive-scope", default=DEFAULTS["archive_scope"], choices=("light", "full"))
+    out.add_argument("--run-group", default="", metavar="NAME",
+                     help="push the archive to results/<user>/NAME/ so several runs of one plate land together")
     out.add_argument("--keep-raw", action="store_true", default=False, help="keep bulky intermediates on disk")
     out.add_argument("--transfer-mode", default=DEFAULTS["transfer_mode"], choices=("push", "pull"),
                      help="push the archive to the storage server, or leave it where it was made")

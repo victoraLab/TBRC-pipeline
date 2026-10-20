@@ -465,6 +465,7 @@ server <- function(input, output, session) {
       # run directory, archive_scope decides what is put into the delivered
       # archive.
       archive_scope = input$archive_scope,
+      run_group = trimws(input$run_group %||% ""),
       source = source_path,
       dest = paste0("results/", source_path),
       stringsAsFactors = FALSE,
@@ -516,6 +517,7 @@ server <- function(input, output, session) {
     run_clonality        = "Run clonality",
     archive_format       = "Archive format",
     archive_scope        = "Archive scope",
+    run_group            = "Results subfolder",
     keep_raw             = "Keep intermediates"
   )
 
@@ -1436,46 +1438,56 @@ server <- function(input, output, session) {
            substr(text, nchar(text) - n + 1, nchar(text)))
   }
 
-  write_backend_log <- function(run_path, backend_output) {
-    if (!nzchar(run_path) || !dir.exists(run_path)) {
-      return(invisible(FALSE))
-    }
-    tryCatch({
-      writeLines(as.character(backend_output), file.path(run_path, "backend.log"))
-      invisible(TRUE)
-    }, error = function(...) invisible(FALSE))
+  # What the run history and the emails say about a submission, read once when
+  # it is submitted. The run now finishes long after the request that started
+  # it, often after its session has gone, when input$ no longer describes it.
+  submission_snapshot <- function() {
+    list(
+      user_id = input$user_id,
+      email = input$email,
+      run_name = current_run_name(),
+      input_method = input$type_input,
+      server_name = input$server_name,
+      pipeline = input$method,
+      # The run log shows chain and barcode set for every historical run; live
+      # runs had neither recorded, so those columns were blank for anything
+      # submitted through the app.
+      primer_set = input$primer,
+      igblast_panel = input$igblast_panel,
+      # Two runs of the same library with and without a design give different
+      # clone counts, and nothing in the log said which had one. Read exactly
+      # as sample.json reads it, pipeline included: the other three never
+      # receive the file, so recording true for them would be a log entry no
+      # run folder backs.
+      platemap_attached = identical(input$method, "tiago_sulkseq") &&
+                            isTRUE(platemap_state()$ok),
+      sequencing_kit = input$sequencing_kit %||% "",
+      archive_format = input$archive_format
+    )
   }
 
-  append_run_history <- function(status_label, runtime_sec, input_bytes = NA_real_, backend_output = "") {
+  append_run_history <- function(status_label, runtime_sec, input_bytes = NA_real_, backend_output = "",
+                                 snap = submission_snapshot()) {
     plates_used <- parse_numeric_marker(backend_output, "TBRC_PLATES_USED")
     if (!length(plates_used) || !is.finite(plates_used)) plates_used <- NA_real_
-    # Persist only a compact summary per run; the full workflow log is written
-    # next to the run metadata by write_backend_log().
+    # Persist only a compact summary per run; the full workflow log is in
+    # backend.log next to the run metadata.
     append_run_stat(
       data.frame(
         timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
-        user_id = input$user_id,
-        run_name = current_run_name(),
-        input_method = input$type_input,
-        server_name = input$server_name,
-        pipeline = input$method,
-        # The run log shows chain and barcode set for every historical run; live
-        # runs had neither recorded, so those columns were blank for anything
-        # submitted through the app.
-        primer_set = input$primer,
-        igblast_panel = input$igblast_panel,
-        # Two runs of the same library with and without a design give different
-        # clone counts, and nothing in the log said which had one. Read exactly
-        # as sample.json reads it, pipeline included: the other three never
-        # receive the file, so recording true for them would be a log entry no
-        # run folder backs.
-        platemap_attached = identical(input$method, "tiago_sulkseq") &&
-                              isTRUE(platemap_state()$ok),
-        sequencing_kit = input$sequencing_kit %||% "",
+        user_id = snap$user_id,
+        run_name = snap$run_name,
+        input_method = snap$input_method,
+        server_name = snap$server_name,
+        pipeline = snap$pipeline,
+        primer_set = snap$primer_set,
+        igblast_panel = snap$igblast_panel,
+        platemap_attached = snap$platemap_attached,
+        sequencing_kit = snap$sequencing_kit,
         # Counted from the delivered wells by final.script.sh, not typed on the
         # form. A submitter does not reliably know this and should not have to.
         plates_used = as.numeric(plates_used),
-        archive_format = input$archive_format,
+        archive_format = snap$archive_format,
         input_bytes = as.numeric(input_bytes),
         runtime_sec = as.numeric(runtime_sec),
         status = as.character(status_label),
@@ -1592,6 +1604,88 @@ server <- function(input, output, session) {
     )
   }
 
+  # Starts goServer.bash or goUpload.bash in the background and returns at once,
+  # so the app stays usable for everyone while the run goes. What used to follow
+  # the blocking call -- run history, emails, the closing message -- is finish(),
+  # called by the shared poller in global.R when the script exits.
+  launch_submission <- function(script, cmd_args, path, started_at, input_bytes = NA_real_) {
+    snap <- submission_snapshot()
+    key <- paste(snap$user_id, snap$run_name, sep = "/")
+    if (background_run_active(key)) {
+      shinyalert(
+        title = "Already running",
+        text = sprintf(paste("Run %s from an earlier submission has not finished yet.",
+                             "Wait for it, or submit under another run name."), snap$run_name),
+        type = "error"
+      )
+      return(invisible(FALSE))
+    }
+
+    finish <- function(status, output) {
+      bytes <- if (is.finite(input_bytes)) input_bytes else parse_numeric_marker(output, "TBRC_INPUT_BYTES")
+      label <- if (identical(status, 0L)) "completed" else "failed"
+      append_run_history(
+        status_label = label,
+        runtime_sec = as.numeric(difftime(Sys.time(), started_at, units = "secs")),
+        input_bytes = bytes,
+        backend_output = output,
+        snap = snap
+      )
+      email_result <- send_run_notifications(
+        status_label = label,
+        sample_name = snap$run_name,
+        storage_name = snap$server_name,
+        archive_format = snap$archive_format,
+        submitter_name = snap$user_id,
+        submitter_email = snap$email
+      )
+      # The page, only if the submitter is still on it.
+      if (session$isClosed()) return(invisible())
+      withReactiveDomain(session, isolate({
+        if (identical(label, "failed")) {
+          failure_text <- summarize_backend_failure(
+            output,
+            "The server-side workflow failed. Please check the backend logs."
+          )
+          shinyalert(
+            title = if (grepl("Folder not found on", output, fixed = TRUE)) "Folder not found" else "Submission failed",
+            text = failure_text,
+            type = "error"
+          )
+          set_progress_detail(sprintf("Run %s failed.", snap$run_name), failure_text)
+        } else {
+          set_progress_detail(
+            sprintf("Run %s finished.", snap$run_name),
+            "Look for pre-trim and post-trim histograms, plate QC, and the .imgt.ready.fasta file in the result bundle.",
+            sprintf(
+              "If the selected storage server is in pull mode, Synology should fetch the %s archive from the HPC results folder.",
+              snap$archive_format
+            )
+          )
+          pgPaneUpdate("thispg", "workflow", 100)
+          pgPaneUpdate("thispg", "export", 100)
+          if (email_result$user$status != 0 || email_result$admin$status != 0) {
+            set_progress_detail(progress_detail(), "Shiny-side completion email could not be sent.")
+          }
+        }
+      }))
+    }
+
+    start_background_script(key, script, cmd_args,
+                            log_path = file.path(path, "backend.log"),
+                            status_path = file.path(path, "backend.exit"),
+                            on_done = finish)
+    pgPaneUpdate("thispg", "dispatch", 100)
+    pgPaneUpdate("thispg", "workflow", 20)
+    set_progress_detail(
+      sprintf("Run %s submitted.", snap$run_name),
+      "It is running on the cluster now. This page stays usable, and you can close it.",
+      if (nzchar(snap$email %||% "")) sprintf("An email goes to %s when it finishes.", snap$email)
+      else "No email address was given, so watch the results folder or the run history for it."
+    )
+    invisible(TRUE)
+  }
+
   write_submission_metadata <- function(path) {
     metadata_df <- submission_row()
     metadata_list <- as.list(metadata_df[1, , drop = TRUE])
@@ -1645,6 +1739,18 @@ server <- function(input, output, session) {
     if (!is.na(default_seq)) {
       updateTextInput(session, "trim_sequence", value = default_seq)
     }
+    # And the IgBLAST scope, but only across the B/T divide: a T set left on
+    # an Ig panel is caught by the backend's receptor check, but the form
+    # should not offer the mistake. A narrower choice within the right class
+    # (igh, trb) is the submitter's to make and is left alone.
+    chain <- barcode_default(servers_config, input$primer, "chain")
+    panel <- isolate(input$igblast_panel) %||% ""
+    tcr_panels <- c("tra", "trb", "tcr_all")
+    if (identical(chain, "T") && !(panel %in% c(tcr_panels, "all_receptors"))) {
+      app_update_picker_input(session, "igblast_panel", selected = "tcr_all")
+    } else if (identical(chain, "B") && panel %in% tcr_panels) {
+      app_update_picker_input(session, "igblast_panel", selected = "ig_all")
+    }
   }, ignoreInit = FALSE)
 
   output$chainHint <- renderText({
@@ -1652,9 +1758,9 @@ server <- function(input, output, session) {
     if (is.na(chain)) {
       "Unrecognised barcode set - check the trim sequence yourself."
     } else if (identical(chain, "T")) {
-      "T cell set. The trim sequence below has been set to the TCR handle."
+      "T cell set. The trim sequence has been set to the TCR handle and the IgBLAST scope to TCR."
     } else {
-      "B cell set. The trim sequence below has been set to the immunoglobulin handle."
+      "B cell set. The trim sequence has been set to the immunoglobulin handle."
     }
   })
 
@@ -2009,11 +2115,6 @@ server <- function(input, output, session) {
       return()
     }
     
-    # Create the directory if it doesn't exist
-    if (!dir.exists(new_bc_dir)) {
-      dir.create(new_bc_dir)
-    }
-    
     # Save the uploaded BC files to the folder
     # We will just use names BC1.txt and BC2.txt for simplicity. Ensure users upload them in the correct order.
     # Validate the CONTENT before anything is written. These bytes are stored on
@@ -2032,6 +2133,10 @@ server <- function(input, output, session) {
       return()
     }
 
+    # Only now, once the files are known to be good. Created before the check,
+    # a rejected upload left an empty folder that the barcode menu then offered
+    # and that blocked the same name from being uploaded again.
+    dir.create(new_bc_dir)
     file.copy(input$BC_files$datapath[1], file.path(new_bc_dir, 'BC1.txt'))
     file.copy(input$BC_files$datapath[2], file.path(new_bc_dir, 'BC2.txt'))
     
@@ -2119,6 +2224,17 @@ server <- function(input, output, session) {
       shinyalert(
         title = "Check the folder name",
         text = invalid_segment_message("Folder in server"),
+        type = "error"
+      )
+      return()
+    }
+
+    # It becomes a folder on the storage server, inside a remote command.
+    run_group <- trimws(input$run_group %||% "")
+    if (nzchar(run_group) && !is_valid_path_segment(run_group)) {
+      shinyalert(
+        title = "Check the results subfolder",
+        text = invalid_segment_message("Results subfolder"),
         type = "error"
       )
       return()
@@ -2253,80 +2369,30 @@ server <- function(input, output, session) {
         )
         return()
       }
+      # Shiny deletes an upload's temporary files when its session ends, which
+      # can now come before goUpload.bash has copied them. Put them where that
+      # script would copy them to (runs/<user>/<R1 name minus its extension>/)
+      # before it starts; it skips a copy onto the same file.
+      upload_dir <- file.path(RUNS_DIR, input$user_id,
+                              sub("\\.[^.]*$", "", input$input_files$name[r1_index]))
+      dir.create(upload_dir, showWarnings = FALSE, recursive = TRUE)
+      staged_reads <- file.path(upload_dir, input$input_files$name[c(r1_index, r2_index)])
+      if (!all(file.copy(input$input_files$datapath[c(r1_index, r2_index)], staged_reads,
+                         overwrite = TRUE))) {
+        shinyalert(title = "Oops!", text = "The uploaded FASTQ files could not be staged for the run.",
+                   type = "error")
+        return()
+      }
       cmd_args <- c(
         "-u", input$user_id,
-        "-d", input$input_files$datapath[r1_index],
-        "-e", input$input_files$datapath[r2_index],
+        "-d", staged_reads[1],
+        "-e", staged_reads[2],
         "-n", input$input_files$name[r1_index],
         "-m", input$input_files$name[r2_index]
       )
-      
-      # Running the pipeline script with arguments
-      pgPaneUpdate("thispg", "dispatch", 100)
-      pgPaneUpdate("thispg", "workflow", 20)
-      
-      
-      result <- run_script(app_script("goUpload.bash"), cmd_args)
-      write_backend_log(path, result$output)
-      if (result$status != 0) {
-        append_run_history(
-          status_label = "failed",
-          runtime_sec = as.numeric(difftime(Sys.time(), run_started_at, units = "secs")),
-          input_bytes = estimated_input_bytes(),
-          backend_output = result$output
-        )
-        failure_text <- summarize_backend_failure(
-          result$output,
-          "The server-side workflow failed. Please check the backend logs."
-        )
-        send_run_notifications(
-          status_label = "failed",
-          sample_name = current_run_name(),
-          storage_name = input$server_name,
-          archive_format = submission_row()[["archive_format"]][[1]],
-          submitter_name = input$user_id,
-          submitter_email = input$email
-        )
-        shinyalert(
-          title = "Submission failed",
-          text = failure_text,
-          type = "error"
-        )
-        set_progress_detail("Upload submission failed.", failure_text)
-        return()
-      }
 
-      append_run_history(
-        status_label = "completed",
-        runtime_sec = as.numeric(difftime(Sys.time(), run_started_at, units = "secs")),
-        input_bytes = estimated_input_bytes(),
-        backend_output = result$output
-      )
-      
-      set_progress_detail(
-        "Upload submission sent.",
-        "Workflow command finished on the app side.",
-        "Final bundle should include QC histograms, plate QC when available, and an .imgt.ready.fasta file.",
-        sprintf(
-          "If the selected storage server is in pull mode, Synology should fetch the %s archive from the HPC results folder.",
-          form()["archive_format", "Submission"]
-        )
-      )
-      
-      pgPaneUpdate("thispg", "workflow", 100)
-      pgPaneUpdate("thispg", "export", 100)
-
-      email_result <- send_run_notifications(
-        status_label = "completed",
-        sample_name = current_run_name(),
-        storage_name = input$server_name,
-        archive_format = submission_row()[["archive_format"]][[1]],
-        submitter_name = input$user_id,
-        submitter_email = input$email
-      )
-      if (email_result$user$status != 0 || email_result$admin$status != 0) {
-        set_progress_detail(progress_detail(), "Shiny-side completion email could not be sent.")
-      }
+      launch_submission(app_script("goUpload.bash"), cmd_args, path, run_started_at,
+                        input_bytes = estimated_input_bytes())
     }
     
     
@@ -2368,7 +2434,7 @@ server <- function(input, output, session) {
         "The server job will pull FASTQ files, run Snakemake, then export results.",
         sprintf(
           "Final packaging will use %s.",
-          form()["archive_format", "Submission"]
+          submission_row()[["archive_format"]][[1]]
         ),
         "Live rule-by-rule Snakemake status is not available in this UI yet."
       )
@@ -2421,71 +2487,7 @@ server <- function(input, output, session) {
       }
       
       
-      pgPaneUpdate("thispg", "dispatch", 100)
-      pgPaneUpdate("thispg", "workflow", 20)
-      # Running the snakemake script on the cluster
-      result <- run_script(app_script("goServer.bash"), cmd_args)
-      write_backend_log(path, result$output)
-      server_input_bytes <- parse_numeric_marker(result$output, "TBRC_INPUT_BYTES")
-      if (result$status != 0) {
-        append_run_history(
-          status_label = "failed",
-          runtime_sec = as.numeric(difftime(Sys.time(), run_started_at, units = "secs")),
-          input_bytes = server_input_bytes,
-          backend_output = result$output
-        )
-        failure_text <- summarize_backend_failure(
-          result$output,
-          "The server-side workflow failed. Please check the backend logs."
-        )
-        send_run_notifications(
-          status_label = "failed",
-          sample_name = current_run_name(),
-          storage_name = input$server_name,
-          archive_format = submission_row()[["archive_format"]][[1]],
-          submitter_name = input$user_id,
-          submitter_email = input$email
-        )
-        failure_title <- if (grepl("Folder not found on", result$output, fixed = TRUE)) "Folder not found" else "Submission failed"
-        shinyalert(
-          title = failure_title,
-          text = failure_text,
-          type = "error"
-        )
-        set_progress_detail("Remote submission failed.", failure_text)
-        return()
-      }
-
-      append_run_history(
-        status_label = "completed",
-        runtime_sec = as.numeric(difftime(Sys.time(), run_started_at, units = "secs")),
-        input_bytes = server_input_bytes,
-        backend_output = result$output
-      )
-      
-      set_progress_detail(
-        "Remote submission sent.",
-        "The HPC command returned to the app.",
-        "Look for pre-trim and post-trim histograms, plate QC, and the .imgt.ready.fasta file in the result bundle.",
-        sprintf(
-          "If the selected storage server is in pull mode, Synology should fetch the %s archive from the HPC results folder.",
-          form()["archive_format", "Submission"]
-        )
-      )
-      pgPaneUpdate("thispg", "workflow", 100)
-      pgPaneUpdate("thispg", "export", 100)
-
-      email_result <- send_run_notifications(
-        status_label = "completed",
-        sample_name = current_run_name(),
-        storage_name = input$server_name,
-        archive_format = submission_row()[["archive_format"]][[1]],
-        submitter_name = input$user_id,
-        submitter_email = input$email
-      )
-      if (email_result$user$status != 0 || email_result$admin$status != 0) {
-        set_progress_detail(progress_detail(), "Shiny-side completion email could not be sent.")
-      }
+      launch_submission(app_script("goServer.bash"), cmd_args, path, run_started_at)
     }
     
   })

@@ -138,7 +138,12 @@ rule demux_vsearch:
 rule wells_vsearch:
     """Dereplicate and cluster each well. Centroids keep every delivered
     sequence a real observed read; what changes is that its size= now aggregates
-    the error cloud instead of counting exact duplicates only."""
+    the error cloud instead of counting exact duplicates only.
+
+    Clustering sees each read without its 5' primer footprint, and the delivered
+    centroid is that read whole again (restore_centroid_reads.py): the degenerate
+    kappa primer otherwise split one clone into several clusters and called the
+    well multiclonal (CMP15: 153 of 186 such kappa wells)."""
     input:
         sentinel=rules.demux_vsearch.output.sentinel,
     output:
@@ -155,6 +160,12 @@ rule wells_vsearch:
         light_5p=str(TRIM[0]) if TRIM else "",
         light_3p=param("wells", "light_chain_3p", "CACTGACACTCCCACGAGCTC"),
         light_footprint=param("wells", "light_chain_primer_nt", 23),
+        mask=param("wells", "cluster_mask_nt", 23),
+        # tiago_vsearch delivers the untrimmed read and leaves every trim to
+        # final.script.sh, which can trim per locus once the locus is known.
+        # tiago_sulkseq annotates these sequences itself, so its luka_light
+        # runs keep receiving them trimmed, as before.
+        restore="1" if PIPELINE == "tiago_vsearch" else "0",
     log:
         "logs/{}.wells.log".format(_SAMPLE),
     shell:
@@ -165,12 +176,12 @@ rule wells_vsearch:
         # handle sits immediately after BC1, so stripping it any earlier would
         # take the barcode with it.
         light_rescue() {{
-            f="$1"; five="$2"; three="$3"; foot="$4"
+            f="$1"; dest="$2"; five="$3"; three="$4"; foot="$5"
             tmp="$(mktemp)"; tmp2="$(mktemp)"
             cutadapt -g "$five" -e 0.2 -O 15 --discard-untrimmed -o "$tmp" "$f" >/dev/null 2>&1 || return 1
             [ -s "$tmp" ] || {{ rm -f "$tmp" "$tmp2"; return 1; }}
             fastx_trimmer -Q33 -f "$((foot + 1))" -i "$tmp" -o "$tmp2" 2>/dev/null || {{ rm -f "$tmp" "$tmp2"; return 1; }}
-            cutadapt -a "$three" -e 0.2 -O 10 --minimum-length 1 -o "$f" "$tmp2" >/dev/null 2>&1
+            cutadapt -a "$three" -e 0.2 -O 10 --minimum-length 1 -o "$dest" "$tmp2" >/dev/null 2>&1
             rc=$?; rm -f "$tmp" "$tmp2"; return $rc
         }}
         export -f light_rescue
@@ -178,17 +189,31 @@ rule wells_vsearch:
         cluster_one() {{
             f="$1"; out="$2"; ident="$3"; iddef="$4"; minlen="$5"; topn="$6"
             prep="${{7:-standard}}"; five="${{8:-}}"; three="${{9:-}}"; foot="${{10:-23}}"
+            mask="${{11:-0}}"; restore="${{12:-0}}"
             w="$(basename "$f" .fastq)"
+            # What is clustered: a copy of the well's reads without their 5'
+            # primer footprint. luka_light also drops reads without the handle
+            # and cuts the 3' tail. Standard keeps every read, cutting the handle
+            # and the next $mask nt only where the handle is found (Ns in a
+            # cutadapt adapter match any base). The well's own reads are left as
+            # they are; the copy goes with split1/ at the final-stage cleanup.
+            clust="${{out}}${{w}}.clust.fastq"
             if [ "$prep" = "luka_light" ]; then
-                light_rescue "$f" "$five" "$three" "$foot" || return 0
-                [ -s "$f" ] || return 0
+                light_rescue "$f" "$clust" "$five" "$three" "$foot" || return 0
+                [ -s "$clust" ] || return 0
+            elif [ -n "$five" ] && [ "$mask" -gt 0 ]; then
+                cutadapt -g "${{five}}$(printf 'N%.0s' $(seq 1 "$mask"))" -e 0.2 -O 15 \
+                         -o "$clust" "$f" >/dev/null 2>&1 || return 0
+            else
+                cp "$f" "$clust"
             fi
             # No length floor here. The merge stage already applied
             # --fastq_minmergelen, so everything reaching this point cleared it
             # BEFORE trimming. Re-applying it after light-chain rescue -- which
             # removes ~75 nt of handle, primer and tail -- discarded most of the
             # library and left clusters of one or two reads.
-            vsearch --fastx_uniques "$f" --sizeout --fastaout "${{out}}${{w}}.uniq.fa" \
+            vsearch --fastx_uniques "$clust" --sizeout --fastaout "${{out}}${{w}}.uniq.fa" \
+                    --uc "${{out}}${{w}}.uniq.uc" \
                     --minseqlength 32 --threads 1 --quiet || return 0
             [ -s "${{out}}${{w}}.uniq.fa" ] || return 0
             vsearch --cluster_size "${{out}}${{w}}.uniq.fa" --id "$ident" --iddef "$iddef" \
@@ -196,13 +221,21 @@ rule wells_vsearch:
                     --centroids "${{out}}${{w}}.cent.fa" --threads 1 --quiet || return 0
             vsearch --sortbysize "${{out}}${{w}}.cent.fa" --topn "$topn" \
                     --sizein --sizeout --output "${{out}}${{w}}.top.fa" --threads 1 --quiet || return 0
-            rm -f "${{out}}${{w}}.uniq.fa" "${{out}}${{w}}.cent.fa"
+            # Deliver the clustered reads whole. Standard always did; luka_light
+            # does now on tiago_vsearch, whose final stage trims per locus.
+            if [ "$prep" != "luka_light" ] || [ "$restore" = "1" ]; then
+                python3 workflow/scripts/restore_centroid_reads.py "${{out}}${{w}}.top.fa" "$f" \
+                    "${{out}}${{w}}.uniq.uc" "${{out}}${{w}}.top.restored.fa" \
+                    && mv "${{out}}${{w}}.top.restored.fa" "${{out}}${{w}}.top.fa"
+            fi
+            rm -f "${{out}}${{w}}.uniq.fa" "${{out}}${{w}}.cent.fa" "${{out}}${{w}}.uniq.uc"
         }}
         export -f cluster_one
         ls {params.split2}*.fastq 2>/dev/null \
           | xargs -P {threads} -I{{}} bash -c \
             'cluster_one "$@"' _ {{}} {params.clustered} {params.ident} {params.iddef} {params.minlen} {params.topn} \
             '{params.preprocess}' '{params.light_5p}' '{params.light_3p}' {params.light_footprint} \
+            {params.mask} {params.restore} \
           > {log} 2>&1
         touch {output.sentinel}
         """

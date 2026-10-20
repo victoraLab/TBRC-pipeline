@@ -62,8 +62,10 @@ PATH_PREFIX="$(json_get_cluster_field path_prefix)"
 
 RUN_DIR="${RUNS_DIR}/${USER_ID}/${FILE_NAME_1%.*}"
 mkdir -p "${RUN_DIR}"
-cp "${DATA_PATH_1}" "${RUN_DIR}/${FILE_NAME_1}"
-cp "${DATA_PATH_2}" "${RUN_DIR}/${FILE_NAME_2}"
+# The app now stages uploads here itself, so the source may already be the
+# target; cp refuses to copy a file onto itself.
+[[ "${DATA_PATH_1}" -ef "${RUN_DIR}/${FILE_NAME_1}" ]] || cp "${DATA_PATH_1}" "${RUN_DIR}/${FILE_NAME_1}"
+[[ "${DATA_PATH_2}" -ef "${RUN_DIR}/${FILE_NAME_2}" ]] || cp "${DATA_PATH_2}" "${RUN_DIR}/${FILE_NAME_2}"
 INPUT_BYTES="$(
     wc -c < "${RUN_DIR}/${FILE_NAME_1}" 2>/dev/null
     wc -c < "${RUN_DIR}/${FILE_NAME_2}" 2>/dev/null
@@ -78,10 +80,8 @@ INPUTPATH="data/runs/${USER_ID}/${FILE_NAME_1%.*}"
 
 # Every value is quoted with shq() (printf %q) rather than wrapped in literal
 # single quotes, so nothing a value contains can end its own quoting.
-REMOTE_COMMAND="cd $(shq "${PIPELINE_ROOT}") \
-  && export PATH=$(shq "${PATH_PREFIX}") \
-  && export DATA_TABLE=$(shq "${DATA_TABLE}") \
-  && export INPUTPATH=$(shq "${INPUTPATH}") \
-  && conda activate $(shq "${SNAKEMAKE_ENV}") \
-  && ./snakemake.sh"
-ssh "${SSH_HOST}" "${REMOTE_COMMAND}"
+# Own working directory per run, as in goServer.bash, so concurrent
+# submissions do not refuse each other; started detached, so the run survives
+# this connection.
+dispatch_detached "${SSH_HOST}" "${PIPELINE_ROOT}" "${PATH_PREFIX}" "${SNAKEMAKE_ENV}" \
+  "${USER_ID}-${FILE_NAME_1%.*}" "${DATA_TABLE}" "${INPUTPATH}"

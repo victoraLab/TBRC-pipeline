@@ -60,6 +60,11 @@
         "mem": "32G",
         "time": "08:00:00"
     },
+    "refinal": {
+        "cpus_per_task": "2",
+        "mem": "16G",
+        "time": "12:00:00"
+    },
     "final": {
         "cpus_per_task": "2",
         "mem": "16G",

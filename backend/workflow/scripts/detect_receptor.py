@@ -36,9 +36,13 @@ Species outcomes (the `species_verdict` field):
   agree         the declared species wins decisively.
   corrected     another species wins decisively; the run is annotated with it.
   contradicted  another species wins decisively but the mode says report only.
-  mixed         no species is decisive, typically one locus per species (a
-                knock-in). The declared species is kept and the per-locus
-                composition says which locus is which.
+  per_locus     the loci need different germline sets: one locus per species,
+                or a locus whose V comes from one species and whose D and J
+                from another (a V knock-in on the host's own D, J and C, as in
+                CMP15). LOCUS_PLAN says which; annotate_per_locus.py follows it.
+  mixed         no species is decisive and no plan could be made, or the mode
+                says report only. The declared species is kept and the
+                per-locus composition says which locus is which.
   unchecked     no other species has its panels built.
 Anything the evidence cannot support is `inconclusive`, and inconclusive never
 changes the panel or the species. A library that fails to align to anything is
@@ -47,6 +51,7 @@ switching would only hide it.
 """
 
 import argparse
+import collections
 import csv
 import os
 import shutil
@@ -142,7 +147,12 @@ def run_probe(igblast_script, fasta, workdir, label, species, panel, aux, organi
 
 
 def parse_airr(path, min_score, max_evalue):
-    """sequence_id -> (locus, v_score), keeping only hits worth believing.
+    """(sequence_id -> (locus, v_score), sequence_id -> j_score).
+
+    The first keeps only V hits worth believing. The J scores are kept for every
+    row with a J call, believable V or not: they decide which species' J a
+    sequence carries, and a human V knocked into a mouse can score below the V
+    floor against mouse germlines while its mouse J is a perfect match.
 
     IgBLAST reports a best V hit for almost any input. Measured on this data:
     a real V region scores 337-418 against its own germline set with E-values
@@ -151,10 +161,16 @@ def parse_airr(path, min_score, max_evalue):
     library that is neither Ig nor TCR reports as inconclusive, which is the
     honest answer and leaves the panel alone."""
     hits = {}
+    j_scores = {}
     with open(path, newline="", errors="replace") as handle:
         for row in csv.DictReader(handle, delimiter="\t"):
             seq_id = (row.get("sequence_id") or "").strip()
             v_call = (row.get("v_call") or "").strip()
+            if seq_id and (row.get("j_call") or "").strip():
+                try:
+                    j_scores[seq_id] = float(row.get("j_score") or 0.0)
+                except ValueError:
+                    pass
             if not seq_id or not v_call:
                 continue
             try:
@@ -177,7 +193,7 @@ def parse_airr(path, min_score, max_evalue):
             locus = v_call.split("*")[0][:3].upper()
             locus = locus if locus in LOCUS_CLASS else ""
             hits[seq_id] = (locus, score)
-    return hits
+    return hits, j_scores
 
 
 def refine_panel(cls, loci, declared):
@@ -246,6 +262,10 @@ def main():
     ap.add_argument("--widen-fraction", type=float, default=0.10)
     # And this share of the subsample has to align at all for any verdict.
     ap.add_argument("--min-assigned-fraction", type=float, default=0.20)
+    # A locus gets its own germline plan only with this many sequences in the
+    # probe, and only when one species wins its V and one its J by
+    # --decisive-fraction. CMP15_all's probe held 151 heavy and 240 kappa.
+    ap.add_argument("--plan-min-sequences", type=int, default=20)
     # What counts as an alignment. Both are far below anything a real V region
     # produces and far above anything random DNA reaches; see parse_airr.
     ap.add_argument("--min-v-score", type=float, default=100.0)
@@ -280,9 +300,11 @@ def main():
         "species_verdict": "unchecked",
         "species_detail": "",
         "applied_species": declared_species,
+        "locus_plan": "",
     }
     loci_counts = {}
     locus_species = {}   # (locus, species) -> count
+    locus_vj = {}        # locus -> Counter of (V species, J species)
 
     def emit(code=0):
         os.makedirs(os.path.dirname(args.report) or ".", exist_ok=True)
@@ -307,6 +329,7 @@ def main():
         print("RECEPTOR_VERDICT={}".format(fields["verdict"]))
         print("APPLIED_SPECIES={}".format(fields["applied_species"]))
         print("SPECIES_VERDICT={}".format(fields["species_verdict"]))
+        print("LOCUS_PLAN={}".format(fields["locus_plan"]))
         sys.exit(code)
 
     if args.mode == "off":
@@ -346,6 +369,7 @@ def main():
         # organism and auxiliary file; every other species is probed under its
         # own name so the script resolves its own auxiliary data.
         tables = {}
+        j_tables = {}
         errors = {}
         for species in species_list:
             own = species == declared_species
@@ -358,7 +382,8 @@ def main():
                 if tsv is None:
                     errors[(species, cls)] = err
                     continue
-                tables[(species, cls)] = parse_airr(tsv, args.min_v_score, args.max_evalue)
+                tables[(species, cls)], j_tables[(species, cls)] = parse_airr(
+                    tsv, args.min_v_score, args.max_evalue)
 
         probed_species = sorted({sp for sp, _ in tables})
         fields["species_probed"] = ",".join(probed_species) or declared_species
@@ -387,6 +412,19 @@ def main():
                 continue
             _, species, cls, locus = best
             locus = locus or ("IG?" if cls == "Ig" else "TR?")
+            # The J is judged on its own, among the same class's tables: a V
+            # knocked in from one species can sit on the host's D and J
+            # (CMP15: human IGHV1-69, 95% to human V; mouse JH, 98-100%).
+            j_best = None
+            for (j_species, j_cls), scores in j_tables.items():
+                score = scores.get(name)
+                if j_cls != cls or score is None or score <= 0:
+                    continue
+                j_key = (score, j_species == declared_species)
+                if j_best is None or j_key > j_best[0]:
+                    j_best = (j_key, j_species)
+            locus_vj.setdefault(locus, collections.Counter())[
+                (species, j_best[1] if j_best else species)] += 1
             loci_counts[locus] = loci_counts.get(locus, 0) + 1
             species_counts[species] = species_counts.get(species, 0) + 1
             locus_species[(locus, species)] = locus_species.get((locus, species), 0) + 1
@@ -455,6 +493,49 @@ def main():
                 "the loci from the other species carry low V identity and unreliable "
                 "gene calls in this archive and need their own annotation.".format(
                     int(round(100 * args.decisive_fraction)), locus_species_text(), declared_species))
+
+    # A plan per locus, when the loci need different germline sets. This
+    # overrides the plate-wide verdict above, which can only pick one species:
+    # on CMP15 it kept mouse for a plate whose heavy V is human (75% identity)
+    # or, on the heavy-only run, switched to human and so scored a mouse JH
+    # against human J (FR4 "13% mutated"). Neither is fixable by choosing.
+    plan = {}
+    for locus, combos in locus_vj.items():
+        total = sum(combos.values())
+        if locus not in LOCUS_CLASS or total < args.plan_min_sequences:
+            continue
+        v_votes, j_votes = collections.Counter(), collections.Counter()
+        for (v_sp, j_sp), count in combos.items():
+            v_votes[v_sp] += count
+            j_votes[j_sp] += count
+        v_sp, v_n = v_votes.most_common(1)[0]
+        j_sp, j_n = j_votes.most_common(1)[0]
+        if v_n >= args.decisive_fraction * total and j_n >= args.decisive_fraction * total:
+            plan[locus] = (v_sp, j_sp, total)
+    sets = {(v_sp, j_sp) for v_sp, j_sp, _ in plan.values()}
+    if len(probed_species) >= 2 and plan and (len(sets) > 1 or any(v != j for v, j in sets)):
+        def describe(locus):
+            v_sp, j_sp, n = plan[locus]
+            what = v_sp if v_sp == j_sp else "V {}, D and J {}".format(v_sp, j_sp)
+            return "{}: {} ({} sequences)".format(locus, what, n)
+        text = "; ".join(describe(k) for k in sorted(plan, key=lambda k: -plan[k][2]))
+        fields["applied_species"] = declared_species
+        if args.mode == "auto":
+            fields["species_verdict"] = "per_locus"
+            fields["locus_plan"] = ",".join(
+                "{}:{}/{}".format(k, plan[k][0], plan[k][1]) for k in sorted(plan))
+            fields["species_detail"] = (
+                "the loci on this plate come from different germline sets -- {}. Each "
+                "locus was annotated against its own sets and the results merged into "
+                "one table; its germline_set column names the set each row was called "
+                "against. Sequences of other loci were annotated as {}.".format(text, declared_species))
+        else:
+            fields["species_verdict"] = "mixed"
+            fields["species_detail"] = (
+                "the loci on this plate come from different germline sets -- {}. They "
+                "were annotated as {} anyway, because this run reports rather than "
+                "acts, so V identity and gene calls are wrong for the other "
+                "sets.".format(text, declared_species))
 
     # ---------------------------------------------------------------- class
     ig_frac = fields["ig_sequences"] / float(aligned)

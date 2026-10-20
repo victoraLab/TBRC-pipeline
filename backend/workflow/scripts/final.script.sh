@@ -4,12 +4,12 @@ set -euo pipefail
 
 # Usage function
 usage() {
-    echo "Usage: $0 [-i INPUT] [-o OUTPUT] [-d DESTINY] [-s SAMPLE] [-t TRIMMING_SEQ] [-y SHOULD_TRIM] [-L PREPROCESS_METHOD] [-u SERVER_USER] [-n SERVER_NAME] [-e NOTIFICATION_EMAIL] [-k SHOULD_KEEP] [-p SERVER_RESULTS_PATH] [-j SERVER_STORAGE] [-r SERVER_SSH_PORT] [-m SERVER_TRANSFER_MODE] [-g RUN_IGBLAST] [-q RUN_CLONALITY] [-f ARCHIVE_FORMAT] [-z IGBLAST_SPECIES] [-l IGBLAST_PANEL] [-b IGBLAST_BIN] [-c IGBLAST_ORGANISM] [-v IGBLAST_DB_V] [-w IGBLAST_DB_D] [-x IGBLAST_DB_J] [-I IGBLAST_DATA] [-a IGBLAST_AUX] [-A ARCHIVE_SCOPE] [-R RECEPTOR_CHECK]"
+    echo "Usage: $0 [-i INPUT] [-o OUTPUT] [-d DESTINY] [-s SAMPLE] [-t TRIMMING_SEQ] [-y SHOULD_TRIM] [-L PREPROCESS_METHOD] [-u SERVER_USER] [-n SERVER_NAME] [-e NOTIFICATION_EMAIL] [-k SHOULD_KEEP] [-p SERVER_RESULTS_PATH] [-j SERVER_STORAGE] [-r SERVER_SSH_PORT] [-m SERVER_TRANSFER_MODE] [-g RUN_IGBLAST] [-q RUN_CLONALITY] [-f ARCHIVE_FORMAT] [-z IGBLAST_SPECIES] [-l IGBLAST_PANEL] [-b IGBLAST_BIN] [-c IGBLAST_ORGANISM] [-v IGBLAST_DB_V] [-w IGBLAST_DB_D] [-x IGBLAST_DB_J] [-I IGBLAST_DATA] [-a IGBLAST_AUX] [-A ARCHIVE_SCOPE] [-R RECEPTOR_CHECK] [-G RUN_GROUP] [-F PRIMER_FOOTPRINT] [-T LIGHT_TAIL_3P]"
     exit 1
 }
 
 # Parsing arguments using getopts
-while getopts ":i:o:s:d:t:y:L:u:e:k:p:j:r:m:g:q:f:z:l:b:c:v:w:x:I:a:A:P:B:R:" opt; do
+while getopts ":i:o:s:d:t:y:L:u:e:k:p:j:r:m:g:q:f:z:l:b:c:v:w:x:I:a:A:P:B:R:G:F:T:" opt; do
     case ${opt} in
         i) INPUT="${OPTARG}" ;;
         o) OUTPUT="${OPTARG}" ;;
@@ -41,6 +41,9 @@ while getopts ":i:o:s:d:t:y:L:u:e:k:p:j:r:m:g:q:f:z:l:b:c:v:w:x:I:a:A:P:B:R:" op
         P) PIPELINE_NAME="${OPTARG}" ;;
         B) PRIMER_SET_NAME="${OPTARG}" ;;
         R) RECEPTOR_CHECK="${OPTARG}" ;;
+        G) RUN_GROUP="${OPTARG}" ;;
+        F) PRIMER_FOOTPRINT="${OPTARG}" ;;
+        T) LIGHT_TAIL_3P="${OPTARG}" ;;
         *) usage ;;
     esac
 done
@@ -56,7 +59,9 @@ PREPROCESS_METHOD="${PREPROCESS_METHOD:-standard}"
 : "${SERVER_RESULTS_PATH:=}"; : "${SERVER_STORAGE:=}"; : "${SERVER_SSH_PORT:=}"
 : "${SERVER_TRANSFER_MODE:=push}"; : "${RUN_IGBLAST:=false}"; : "${RUN_CLONALITY:=false}"
 : "${ARCHIVE_FORMAT:=zip}"; : "${ARCHIVE_SCOPE:=}"
-: "${PIPELINE_NAME:=}"; : "${PRIMER_SET_NAME:=}"; : "${RECEPTOR_CHECK:=auto}"
+: "${PIPELINE_NAME:=}"; : "${PRIMER_SET_NAME:=}"; : "${RECEPTOR_CHECK:=auto}"; : "${RUN_GROUP:=none}"
+: "${PRIMER_FOOTPRINT:=}"; : "${LIGHT_TAIL_3P:=CACTGACACTCCCACGAGCTC}"
+[[ "${PRIMER_FOOTPRINT}" == "none" ]] && PRIMER_FOOTPRINT=""
 : "${IGBLAST_SPECIES:=}"; : "${IGBLAST_PANEL:=}"; : "${IGBLAST_BIN:=igblastn}"
 : "${IGBLAST_ORGANISM:=}"; : "${IGBLAST_DB_V:=}"; : "${IGBLAST_DB_D:=}"
 : "${IGBLAST_DB_J:=}"; : "${IGBLAST_DATA:=}"; : "${IGBLAST_AUX:=}"
@@ -79,6 +84,8 @@ RUN_REPORT_SCRIPT="${SCRIPT_DIR}/run_report.R"
 IGBLAST_SCRIPT="${SCRIPT_DIR}/run_igblast.sh"
 CLONALITY_SCRIPT="${SCRIPT_DIR}/run_clonality.R"
 RECEPTOR_SCRIPT="${SCRIPT_DIR}/detect_receptor.py"
+PER_LOCUS_SCRIPT="${SCRIPT_DIR}/annotate_per_locus.py"
+FOOTPRINT_SCRIPT="${SCRIPT_DIR}/trim_primer_footprint.py"
 PLATE_QC_DIR="${QC_DIR}/plates"
 IGBLAST_DIR="${DESTINY}/igblast"
 CLONALITY_DIR="${DESTINY}/clonality"
@@ -117,10 +124,15 @@ EFFECTIVE_IGBLAST_DATA="${IGBLAST_DATA:-${INHERITED_IGBLAST_DATA}}"
 # What goes INTO the archive. This is deliberately a different question from
 # SHOULD_KEEP, which only decides whether the bulky intermediates survive on
 # disk in the run directory (see the cleanup block near the end of this file).
-#   light -> everyday outputs only: the imgt.ready FASTA, every QC/annotation
-#            table, and the multi-page QC PDFs.
-#   full  -> everything light has, plus the untrimmed assembled FASTA and the
-#            per-plate PNG expansions of the figures already in those PDFs.
+#   light -> everyday outputs only: the imgt.ready FASTA, the untrimmed
+#            assembled FASTA, every QC/annotation table, and the multi-page QC
+#            PDFs.
+#   full  -> everything light has, plus the per-plate PNG expansions of the
+#            figures already in those PDFs.
+# The untrimmed FASTA was full-only from 24 Aug to Oct 2026, on the mistaken
+# premise that archives never carried it; CMP12-CMP14's did, users relied on it,
+# and at ~3% of a light archive it is the only delivered file that shows what
+# the primer trim removed.
 # An older sample.json has no archive_scope field at all. Rather than silently
 # changing what such a run produces in an arbitrary direction, fall back to the
 # only related intent it does express: a submitter who asked to keep
@@ -160,11 +172,30 @@ fi
 # data: --discard-untrimmed would throw away every read whose handle is
 # already gone. The Jan-2026 CMu/CMP10 run is the worked example -- 3,411
 # assembled sequences went in, 417 came out, and exactly one of those was
-# longer than 200 nt.
+# longer than 200 nt. That still holds for classic_luka and tiago_sulkseq.
+# tiago_vsearch now clusters on trimmed copies but delivers the reads whole,
+# so its luka_light FASTA is trimmed here like a standard one, plus the 3' tail
+# luka_light always removed, and the primer footprint is cut per locus after
+# annotation instead of a fixed 23 nt from every read.
+PRETRIMMED="false"
+if [[ "${PREPROCESS_METHOD,,}" == "luka_light" && "${PIPELINE_NAME:-}" != "tiago_vsearch" ]]; then
+    PRETRIMMED="true"
+fi
+# tiago_nanopore's demultiplexer cuts through the 5' handle itself, so a
+# cutadapt pass for it could only discard every sequence, and with no trim
+# sequence set it stopped the run ("Adapter sequence is empty"). The primer
+# after the handle is still on, so the per-locus footprint cut still applies.
+HANDLE_REMOVED="false"
+[[ "${PIPELINE_NAME:-}" == "tiago_nanopore" ]] && HANDLE_REMOVED="true"
 EFFECTIVE_TRIM="${SHOULD_TRIM}"
-if [[ "${SHOULD_TRIM,,}" == "true" && "${PREPROCESS_METHOD,,}" == "luka_light" ]]; then
+FOOTPRINT_TRIM="${SHOULD_TRIM,,}"
+if [[ "${SHOULD_TRIM,,}" == "true" && "${PRETRIMMED}" == "true" ]]; then
     EFFECTIVE_TRIM="false"
+    FOOTPRINT_TRIM="false"
     echo "Primer trimming skipped: luka_light preprocessing already removed the 5' handle (${TRIMMING_SEQ}) during barcode splitting."
+elif [[ "${SHOULD_TRIM,,}" == "true" && "${HANDLE_REMOVED}" == "true" ]]; then
+    EFFECTIVE_TRIM="false"
+    echo "5' handle trim skipped: the nanopore demultiplexer already removed it. The primer footprint is still cut per locus after annotation."
 fi
 
 if [[ "${EFFECTIVE_TRIM,,}" == "true" ]] && command -v Rscript >/dev/null 2>&1; then
@@ -180,6 +211,13 @@ if [[ "${EFFECTIVE_TRIM,,}" == "true" ]]; then
     # genuine match (measured: 2007/2007 kappa, 2586/2589 heavy) and takes the
     # mismatched case to zero, where the check below can catch it.
     cutadapt -g "${TRIMMING_SEQ}" -e 0.2 -O 15 --discard-untrimmed -o "${IMGT_READY_FASTA_PATH}" "${RESULT_FASTA_PATH}"
+    if [[ "${PREPROCESS_METHOD,,}" == "luka_light" ]]; then
+        # The light-chain 3' tail and the plate barcode after it, as luka_light
+        # has always removed them; settings as in its rescue step.
+        TAIL_TMP="$(mktemp "${TMPDIR:-/tmp}/tbrc_tail.XXXXXX")"
+        cutadapt -a "${LIGHT_TAIL_3P}" -e 0.2 -O 10 --minimum-length 1 -o "${TAIL_TMP}" "${IMGT_READY_FASTA_PATH}"
+        cat "${TAIL_TMP}" > "${IMGT_READY_FASTA_PATH}"
+    fi
 
     # A trim sequence that does not belong to this library does not error --
     # it silently deletes the library. Report the retention explicitly and
@@ -264,6 +302,7 @@ RECEPTOR_VERDICT="not_run"
 RECEPTOR_APPLIED="${IGBLAST_PANEL:-}"
 SPECIES_VERDICT="not_run"
 SPECIES_APPLIED="${IGBLAST_SPECIES:-}"
+LOCUS_PLAN=""
 if [[ "${RUN_IGBLAST,,}" == "true" && -f "${IMGT_READY_FASTA_PATH}" && -f "${RECEPTOR_SCRIPT}" ]] \
    && command -v python3 >/dev/null 2>&1; then
     RECEPTOR_MODE="$(printf '%s' "${RECEPTOR_CHECK}" | tr '[:upper:]' '[:lower:]')"
@@ -295,6 +334,7 @@ if [[ "${RUN_IGBLAST,,}" == "true" && -f "${IMGT_READY_FASTA_PATH}" && -f "${REC
         RECEPTOR_VERDICT="$(printf '%s\n' "${RECEPTOR_OUT}" | sed -n 's/^RECEPTOR_VERDICT=//p' | tail -1)"
         SPECIES_APPLIED="$(printf '%s\n' "${RECEPTOR_OUT}" | sed -n 's/^APPLIED_SPECIES=//p' | tail -1)"
         SPECIES_VERDICT="$(printf '%s\n' "${RECEPTOR_OUT}" | sed -n 's/^SPECIES_VERDICT=//p' | tail -1)"
+        LOCUS_PLAN="$(printf '%s\n' "${RECEPTOR_OUT}" | sed -n 's/^LOCUS_PLAN=//p' | tail -1)"
         case "${RECEPTOR_VERDICT}" in
             agree)
                 echo "Receptor check: sequences match the declared panel (${IGBLAST_PANEL:-ig_all})."
@@ -339,10 +379,11 @@ if [[ "${RUN_IGBLAST,,}" == "true" && -f "${IMGT_READY_FASTA_PATH}" && -f "${REC
     # The species, judged the same way. A plate whose heavy chains were human
     # went out annotated as mouse at 75% V identity with "completed" on the
     # report (CMP15_heavy). When another species wins decisively the check
-    # names it and, in auto mode, the run is annotated against it. A mixed
-    # result -- one locus per species, as in a knock-in -- keeps the declared
-    # species and is reported; IgBLAST cannot annotate against two germline
-    # sets at once.
+    # names it and, in auto mode, the run is annotated against it. When the
+    # loci need different sets -- one locus per species, or a knocked-in V on
+    # the host's D and J -- the check returns a plan per locus and the
+    # annotation step below follows it (annotate_per_locus.py). A mixed result
+    # without a plan keeps the declared species and is reported.
     case "${SPECIES_VERDICT}" in
         agree)
             echo "Species check: sequences score best against ${IGBLAST_SPECIES:-mouse} germlines, as declared."
@@ -362,6 +403,9 @@ if [[ "${RUN_IGBLAST,,}" == "true" && -f "${IMGT_READY_FASTA_PATH}" && -f "${REC
             ;;
         contradicted)
             echo "Species check: the sequences score best against another species' germlines, and the species was left as submitted. V identity and gene calls will be wrong." >&2
+            ;;
+        per_locus)
+            echo "Species check: the loci need different germline sets (${LOCUS_PLAN}); each locus is annotated against its own." >&2
             ;;
         mixed)
             echo "Species check: no single species accounts for the plate; the declared species was kept. See qc/receptor/locus_composition.tsv for which locus is which." >&2
@@ -450,6 +494,7 @@ write_annotation_status() {
         printf 'igblast_identity_floor\t%s\n' "${IDENTITY_FLOOR}"
         printf 'igblast_identity_verdict\t%s\n' "${IGBLAST_IDENTITY_VERDICT:-}"
         printf 'species_verdict\t%s\n' "${SPECIES_VERDICT:-}"
+        printf 'luka_light_heavy_records\t%s\n' "${LUKA_LIGHT_HEAVY:-}"
         printf 'clonality_state\t%s\n' "${CLONALITY_STATE}"
         printf 'clonality_reason\t%s\n' "${CLONALITY_REASON}"
         printf 'annotated_sequences\t%s\n' \
@@ -474,15 +519,66 @@ if [[ "${RUN_IGBLAST,,}" == "true" ]]; then
     echo "  data=${EFFECTIVE_IGBLAST_DATA:-}"
     echo "  aux=${IGBLAST_AUX:-}"
     # Capture stderr separately so skipped-vs-failed IGBlast cases can be
-    # handled without losing the detailed diagnostics.
-    if IGBLAST_DATA="${EFFECTIVE_IGBLAST_DATA}" IGBLAST_BIN="${IGBLAST_BIN:-igblastn}" "${IGBLAST_SCRIPT}" "${IMGT_READY_FASTA_PATH}" "${IGBLAST_DIR}" "${SAMPLE}" "${IGBLAST_SPECIES:-human}" "${IGBLAST_PANEL:-ig_all}" "${IGBLAST_DB_V:-}" "${IGBLAST_DB_D:-}" "${IGBLAST_DB_J:-}" "${IGBLAST_AUX:-}" "${IGBLAST_ORGANISM:-human}" 2>/tmp/tbrc_igblast.stderr; then
+    # handled without losing the detailed diagnostics. One file per call: it
+    # used to be a fixed /tmp/tbrc_igblast.stderr, which two runs' final jobs
+    # share whenever SLURM puts them on the same node, so one run could report
+    # the other run's IgBLAST error as its own.
+    IGBLAST_STDERR="$(mktemp "${TMPDIR:-/tmp}/tbrc_igblast.XXXXXX")"
+    annotate() {
+        if [[ -n "${LOCUS_PLAN}" && "${SPECIES_VERDICT}" == "per_locus" ]]; then
+            IGBLAST_DATA="${EFFECTIVE_IGBLAST_DATA}" IGBLAST_BIN="${IGBLAST_BIN:-igblastn}" python3 "${PER_LOCUS_SCRIPT}" \
+                --fasta "${IMGT_READY_FASTA_PATH}" --out-dir "${IGBLAST_DIR}" --sample "${SAMPLE}" \
+                --plan "${LOCUS_PLAN}" --declared-species "${IGBLAST_SPECIES:-human}" \
+                --panel "${IGBLAST_PANEL:-ig_all}" --organism "${IGBLAST_ORGANISM:-}" \
+                --aux "${IGBLAST_AUX:-}" --igblast-script "${IGBLAST_SCRIPT}"
+        else
+            IGBLAST_DATA="${EFFECTIVE_IGBLAST_DATA}" IGBLAST_BIN="${IGBLAST_BIN:-igblastn}" "${IGBLAST_SCRIPT}" "${IMGT_READY_FASTA_PATH}" "${IGBLAST_DIR}" "${SAMPLE}" "${IGBLAST_SPECIES:-human}" "${IGBLAST_PANEL:-ig_all}" "${IGBLAST_DB_V:-}" "${IGBLAST_DB_D:-}" "${IGBLAST_DB_J:-}" "${IGBLAST_AUX:-}" "${IGBLAST_ORGANISM:-human}"
+        fi
+    }
+    if annotate 2>"${IGBLAST_STDERR}"; then
         echo "IGBlast completed."
         IGBLAST_STATE="completed"
-        IGBLAST_REASON="Annotated with the ${IGBLAST_PANEL:-ig_all} germline panel for ${IGBLAST_SPECIES:-human}."
+        if [[ -n "${LOCUS_PLAN}" && "${SPECIES_VERDICT}" == "per_locus" ]]; then
+            IGBLAST_REASON="Annotated per locus with the ${IGBLAST_PANEL:-ig_all} panel (${LOCUS_PLAN}, as V species/D-J species); other loci as ${IGBLAST_SPECIES:-human}."
+        else
+            IGBLAST_REASON="Annotated with the ${IGBLAST_PANEL:-ig_all} germline panel for ${IGBLAST_SPECIES:-human}."
+        fi
         measure_v_identity "${IGBLAST_DIR}/${SAMPLE}.igblast.tsv"
+        # The primer footprint, cut per locus now that the locus is known
+        # (trim_primer_footprint.py says why), then annotated again so the
+        # delivered table describes the delivered sequences.
+        if [[ -n "${PRIMER_FOOTPRINT}" && "${FOOTPRINT_TRIM}" == "true" ]]; then
+            FOOTPRINT_TMP="$(mktemp "${TMPDIR:-/tmp}/tbrc_footprint.XXXXXX")"
+            FOOTPRINT_OUT="$(python3 "${FOOTPRINT_SCRIPT}" --fasta "${IMGT_READY_FASTA_PATH}" \
+                --airr "${IGBLAST_DIR}/${SAMPLE}.igblast.tsv" --footprint "${PRIMER_FOOTPRINT}" --out "${FOOTPRINT_TMP}")"
+            echo "${FOOTPRINT_OUT}"
+            if [[ "$(sed -n 's/^FOOTPRINT_CUT=//p' <<< "${FOOTPRINT_OUT}")" != "0" ]]; then
+                cat "${FOOTPRINT_TMP}" > "${IMGT_READY_FASTA_PATH}"
+                if ! annotate 2>>"${IGBLAST_STDERR}"; then
+                    IGBLAST_STATUS=$?
+                    cat "${IGBLAST_STDERR}" >&2 || true
+                    IGBLAST_STATE="failed"
+                    IGBLAST_REASON="IgBLAST failed on the primer-trimmed sequences (exit ${IGBLAST_STATUS})."
+                    write_annotation_status
+                    exit 1
+                fi
+                IGBLAST_REASON="${IGBLAST_REASON} Primer footprint cut per locus (${PRIMER_FOOTPRINT}) before the final annotation."
+                measure_v_identity "${IGBLAST_DIR}/${SAMPLE}.igblast.tsv"
+            fi
+        fi
+        # classic_luka and tiago_sulkseq cut a fixed 23 nt after the 5' handle
+        # before assembly. That is the F_106 Vk primer on a kappa read, but the
+        # heavy primer is the handle itself, so on a heavy read the 23 nt are
+        # template: FR1 nt 24-46. A mixed plate lets heavy reads through the
+        # handle filter (CMP15_kappa: 424 records). Count them so the report can
+        # say so. tiago_vsearch no longer has the problem (above).
+        if [[ "${PRETRIMMED}" == "true" ]]; then
+            LUKA_LIGHT_HEAVY="$(awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == "v_call") c = i; next }
+                c && $c ~ /^IGHV/ { n++ } END { print n + 0 }' "${IGBLAST_DIR}/${SAMPLE}.igblast.tsv")"
+        fi
     else
         IGBLAST_STATUS=$?
-        cat /tmp/tbrc_igblast.stderr >&2 || true
+        cat "${IGBLAST_STDERR}" >&2 || true
         # 64 is run_igblast.sh's own "not set up on this host" code. It used to
         # be 2, which BLAST+ also returns for a database error, so a real abort
         # was filed under "skipped" and the run was delivered without its
@@ -490,7 +586,7 @@ if [[ "${RUN_IGBLAST,,}" == "true" ]]; then
         if [[ "${IGBLAST_STATUS}" -eq 64 ]]; then
             echo "IGBlast skipped because server-side dependencies or database paths are not configured." >&2
             IGBLAST_STATE="skipped"
-            IGBLAST_REASON="$(tail -1 /tmp/tbrc_igblast.stderr 2>/dev/null | tr -d '\t' || true)"
+            IGBLAST_REASON="$(tail -1 "${IGBLAST_STDERR}" 2>/dev/null | tr -d '\t' || true)"
             IGBLAST_REASON="${IGBLAST_REASON:-The germline databases or the IgBLAST binary were not found on the server.}"
         else
             IGBLAST_STATE="failed"
@@ -499,6 +595,17 @@ if [[ "${RUN_IGBLAST,,}" == "true" ]]; then
             exit "${IGBLAST_STATUS}"
         fi
     fi
+fi
+
+# Per-locus well verdicts, from the delivered records and their annotation
+# (well_verdicts_by_locus.py says why the per-well verdict misleads on a mixed
+# plate). Same thresholds as rank_wells.py; a failure only costs the table.
+if [[ "${IGBLAST_STATE}" == "completed" && -f "${IGBLAST_DIR}/${SAMPLE}.igblast.tsv" ]]; then
+    mkdir -p "${QC_DIR}/assembly"
+    python3 "${SCRIPT_DIR}/well_verdicts_by_locus.py" --fasta "${IMGT_READY_FASTA_PATH}" \
+        --airr "${IGBLAST_DIR}/${SAMPLE}.igblast.tsv" --sample "${SAMPLE}" \
+        --out "${QC_DIR}/assembly/well_verdicts_by_locus.tsv" \
+        || echo "Per-locus well verdicts failed and were skipped." >&2
 fi
 
 # CLONALITY_LIB points at an R library that holds a newer clonality than the
@@ -630,17 +737,22 @@ write_archive_manifest() {
             printf '  %-28s %s\n' "${SAMPLE}.vdj_per_well.fasta" "one VDJ consensus per well, called more strictly for mutation analysis"
         fi
         printf '  %-28s %s\n' "${SAMPLE}.imgt.ready.fasta" "analysis-ready sequences (trimmed when primer trimming was on)"
+        if [[ "${PRETRIMMED}" == "true" ]]; then
+            printf '  %-28s %s\n' "${SAMPLE}.final.fasta" "assembled sequences; luka_light trims during assembly here, so these are trimmed too"
+        elif [[ "${HANDLE_REMOVED}" == "true" ]]; then
+            printf '  %-28s %s\n' "${SAMPLE}.final.fasta" "one consensus per well; demultiplexing removed barcodes and handle, a primer after the handle is still on"
+        else
+            printf '  %-28s %s\n' "${SAMPLE}.final.fasta" "assembled sequences before primer trimming: barcodes, handle and primers still on"
+        fi
         printf '  %-28s %s\n' "qc/" "QC tables (.tsv) and multi-page figures (.pdf)"
         printf '  %-28s %s\n' "igblast/, clonality/" "annotation and clonality tables, when those steps ran"
         echo
         if [[ "${ARCHIVE_SCOPE}" == "full" ]]; then
             echo "Included because this run asked for the full archive:"
-            printf '  %-28s %s\n' "${SAMPLE}.final.fasta" "assembled sequences before primer trimming"
             printf '  %-28s %s\n' "qc/plates/*.plate_*.png" "one PNG per plate; the same pages are in the plate PDFs"
             printf '  %-28s %s\n' "qc/plates/*.panel.png" "PNG panel; the same figure is in the matching panel PDF"
         else
             echo "Left out of this light archive (re-submit with the full archive option to get them):"
-            printf '  %-28s %s\n' "${SAMPLE}.final.fasta" "assembled sequences before primer trimming"
             printf '  %-28s %s\n' "qc/plates/*.plate_*.png" "per-plate PNGs; every page is already in the plate PDFs"
             printf '  %-28s %s\n' "qc/plates/*.panel.png" "panel PNGs; the same figure is in the matching panel PDF"
         fi
@@ -673,9 +785,8 @@ mkdir -p "${PACKAGE_DIR}"
               "${DESTINY}/nanopore/${SAMPLE}.vdj_per_well.fasta"; do
         [[ -f "${np}" ]] && cp "${np}" "${PACKAGE_DIR}/"
     done
-    if [[ "${ARCHIVE_SCOPE}" == "full" ]]; then
-        cp "${RESULT_FASTA_PATH}" "${PACKAGE_DIR}/"
-    fi
+    # Untrimmed, in both scopes (see the scope note near the top).
+    [[ -f "${RESULT_FASTA_PATH}" ]] && cp "${RESULT_FASTA_PATH}" "${PACKAGE_DIR}/"
     cp -R "${QC_DIR}" "${PACKAGE_DIR}/"
     if [[ -d "${IGBLAST_DIR}" ]]; then
         cp -R "${IGBLAST_DIR}" "${PACKAGE_DIR}/"
@@ -723,6 +834,10 @@ if [[ "${SERVER_TRANSFER_MODE:-push}" == "pull" ]]; then
     echo "Remote rsync skipped. Synology should pull: ${ARCHIVE_PATH}"
 elif [[ -n "${SERVER_RESULTS_PATH:-}" && "${SERVER_RESULTS_PATH}" != "NA" ]]; then
     REMOTE_RESULTS_DIR="${SERVER_RESULTS_PATH%/}/${SERVER_USER}/"
+    # The Snakefile only lets a plain path segment through, as 'none' when unset.
+    if [[ -n "${RUN_GROUP}" && "${RUN_GROUP}" != "none" ]]; then
+        REMOTE_RESULTS_DIR="${REMOTE_RESULTS_DIR}${RUN_GROUP}/"
+    fi
     REMOTE_HOST="${REMOTE_RESULTS_DIR%%:*}"
     REMOTE_PATH="${REMOTE_RESULTS_DIR#*:}"
     SSH_ARGS=()

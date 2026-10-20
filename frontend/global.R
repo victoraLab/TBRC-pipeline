@@ -156,6 +156,58 @@ BC_DIR    <- app_state_dir("TBRC_BC_DIR", "bc")
 
 RUN_STATS_FILE <- file.path(STATE_DIR, RUN_STATS_FILE)
 
+# ---------------------------------------------------------------- background runs
+# A submission used to run inside the request: goServer.bash holds the pipeline
+# in the foreground over ssh, run_script() waited for it, and the app is one R
+# process, so for the length of a run nobody else could load the page or
+# submit. Each submission now runs as a background shell that writes its output
+# and, last, its exit status into the run folder. One poller, shared by every
+# session, watches for those status files and hands each result to the
+# submission's own completion handler, which records the run and sends the
+# emails whether or not the submitter still has the page open.
+BACKGROUND_RUNS <- new.env()
+BACKGROUND_POLL <- new.env()
+BACKGROUND_POLL$scheduled <- FALSE
+BACKGROUND_POLL_SECONDS <- 5
+
+background_run_active <- function(key) exists(key, envir = BACKGROUND_RUNS, inherits = FALSE)
+
+start_background_script <- function(key, script_path, args, log_path, status_path, on_done) {
+  unlink(status_path)
+  command <- sprintf("bash %s > %s 2>&1; echo $? > %s",
+                     paste(shQuote(c(script_path, args)), collapse = " "),
+                     shQuote(log_path), shQuote(status_path))
+  system2("bash", c("-c", shQuote(command)), wait = FALSE, stdout = FALSE, stderr = FALSE)
+  assign(key, list(log_path = log_path, status_path = status_path, on_done = on_done),
+         envir = BACKGROUND_RUNS)
+  schedule_background_poll()
+}
+
+schedule_background_poll <- function() {
+  if (!BACKGROUND_POLL$scheduled && length(ls(BACKGROUND_RUNS))) {
+    BACKGROUND_POLL$scheduled <- TRUE
+    later::later(poll_background_runs, BACKGROUND_POLL_SECONDS)
+  }
+}
+
+poll_background_runs <- function() {
+  BACKGROUND_POLL$scheduled <- FALSE
+  for (key in ls(BACKGROUND_RUNS)) {
+    job <- get(key, envir = BACKGROUND_RUNS)
+    # Absent while the script runs; empty for the instant between the shell
+    # creating it and writing the code. Either way, look again next time.
+    status <- suppressWarnings(as.integer(
+      tryCatch(readLines(job$status_path, warn = FALSE)[1], error = function(...) NA)))
+    if (is.na(status)) next
+    output <- paste(tryCatch(readLines(job$log_path, warn = FALSE), error = function(...) character(0)),
+                    collapse = "\n")
+    rm(list = key, envir = BACKGROUND_RUNS)
+    tryCatch(job$on_done(status, output), error = function(e)
+      message(sprintf("TBRC: the completion handler for %s failed: %s", key, conditionMessage(e))))
+  }
+  schedule_background_poll()
+}
+
 format_duration_compact <- function(total_seconds) {
   total_seconds <- as.numeric(total_seconds)
   if (is.na(total_seconds) || total_seconds < 0) {

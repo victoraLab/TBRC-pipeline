@@ -51,7 +51,10 @@ if (is.null(airr)) {
 well_of <- function(x) sub("\\|.*$", "", x)
 
 # One gene per call: IgBLAST returns comma-separated alleles by descending score.
-first_gene <- function(x) sub(",.*$", "", ifelse(is.na(x), "", x))
+# The allele goes too, as in the report and the clonality package: tied alleles
+# are listed alphabetically, so the same gene can come back as *01 in one well
+# and *02 in another and split one clone (test results/igkj1-2026-10-19/).
+first_gene <- function(x) sub("\\*.*$", "", sub(",.*$", "", ifelse(is.na(x), "", x)))
 
 d <- airr %>%
   mutate(platewell = well_of(.data$sequence_id),

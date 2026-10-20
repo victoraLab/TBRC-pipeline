@@ -10,6 +10,8 @@ Thumbs.db
 .RData
 .Ruserdata
 .Rproj.user/
+# R's default PDF device writes here when a script plots without opening one.
+Rplots.pdf
 
 # Python / general cache files
 __pycache__/

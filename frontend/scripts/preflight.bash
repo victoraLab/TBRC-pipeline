@@ -39,12 +39,18 @@ if [[ -z "${INPUT_FOLDER}" ]]; then
   exit 0
 fi
 
-if ! validate_path_segment "${INPUT_FOLDER}" 2>/dev/null; then
+# validate_path_segment exits rather than returns (goServer.bash wants that), so
+# call it in a subshell: called directly it ended this script before the FAIL
+# line below was printed, and the app saw an empty preflight instead of the
+# reason. The folder name goes into remote commands further down, so a bad
+# one also stops the checks here.
+if ! ( validate_path_segment "${INPUT_FOLDER}" ) 2>/dev/null; then
   emit FAIL bad_folder_name "Folder name contains characters that are not allowed: ${INPUT_FOLDER}" \
        "Use only letters, numbers, dot, dash and underscore. Spaces and slashes will not work."
+  exit 0
 fi
 
-if [[ -n "${RUN_NAME}" ]] && ! validate_path_segment "${RUN_NAME}" 2>/dev/null; then
+if [[ -n "${RUN_NAME}" ]] && ! ( validate_path_segment "${RUN_NAME}" ) 2>/dev/null; then
   emit FAIL bad_run_name "Run name contains characters that are not allowed: ${RUN_NAME}" \
        "Use only letters, numbers, dot, dash and underscore."
 fi

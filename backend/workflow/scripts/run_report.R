@@ -337,7 +337,7 @@ if (NANOPORE && exists("np_plot_quality")) {
 
 if (!is.null(REP$airr) && exists("rep_plot_vgene")) {
   add_plot("rep_v", rep_plot_vgene(REP$airr, 20, gvic_theme), 9, 6.2,
-    "Which V genes the run used. IGHV3-6CHI1-64 is folded into IGHV3-6: one gene under two names, and leaving them apart splits a single gene across two bars.")
+    "Which V genes the run used, counting the first allele of each call as its gene.")
   add_plot("rep_j", rep_plot_jgene(REP$airr, gvic_theme), 8, 4.2,
     "J usage is narrower than V and mostly reflects the locus rather than selection.")
   add_plot("rep_shm", rep_plot_shm(REP$airr, NANOPORE, gvic_theme), 9, 4.4,
@@ -566,15 +566,17 @@ if (!is.null(RC$fields)) {
 
   # The species, judged by the same probe. A wrong species is the one failure
   # worse than a wrong panel: every record is "annotated", at 75% identity,
-  # to genes the animal does not have. A mixed plate -- human heavy chains in
-  # a knock-in with mouse light chains -- is kept as declared and said out loud,
-  # because one IgBLAST run cannot serve two germline sets.
+  # to genes the animal does not have. A plate whose loci need different sets
+  # -- a human V knock-in on mouse D/J beside mouse kappa -- is annotated per
+  # locus and said out loud; one that could not be planned is kept as declared.
   sp_verdict <- g("species_verdict", "")
   sp_tones  <- c(corrected = "crit", contradicted = "crit", mixed = "warn",
+                 per_locus = "warn",
                  unchecked = "", agree = "", skipped = "", failed = "warn")
   sp_titles <- c(corrected    = "Species corrected",
                  contradicted = "Species contradicts the submission",
                  mixed        = "More than one species on the plate",
+                 per_locus    = "Loci annotated against different germline sets",
                  failed       = "Species check did not run")
   if (sp_verdict %in% names(sp_titles)) {
     receptor_banner <- paste0(receptor_banner,
@@ -680,6 +682,21 @@ if (!is.null(ANN)) {
       ") does not match these sequences: wrong species, wrong strain, or a locus the ",
       "panel does not carry. V and J usage, mutation load and clone calls below all ",
       "inherit this. See the receptor and species check above.</div>")
+  }
+
+  # Heavy chains through the light-chain protocol. Its fixed 23-nt cut after
+  # the handle is the kappa primer, but on a heavy read it is template (FR1 nt
+  # 24-46), and nothing else in the run says so. A floor, so a handful of
+  # forced calls on a light-only plate does not raise it.
+  n_heavy <- suppressWarnings(as.integer(a("luka_light_heavy_records", "")))
+  if (isTRUE(n_heavy > 0 && (n_heavy >= 20 || n_heavy >= 0.05 * n_ann))) {
+    annotation_note <- paste0(annotation_note,
+      "<div class='alert alert-warn'><b>Heavy chains on a light-chain (luka_light) run</b>",
+      fmt_int(n_heavy), " of ", fmt_int(n_ann), " annotated records are heavy chains. ",
+      "The light-chain protocol removes 23 nt after the 5' handle: the kappa primer on a ",
+      "kappa read, but real sequence on a heavy read, so these records lack FR1 positions ",
+      "24-46. Their FR1 and V identity are short by those bases. For a plate that carries ",
+      "both chains, submit with the standard protocol and the ig_all panel.</div>")
   }
 }
 
@@ -826,6 +843,26 @@ plate_block <- if (length(plate_plots)) {
   miss("ggplate is not installed on this node, so plate maps")
 } else miss("plate_read_depth.tsv")
 
+# Wells judged per locus (well_verdicts_by_locus.py): on a mixed plate a well
+# with one cell's heavy and kappa chains is two monoclonal loci, not a doublet,
+# which is what the per-well verdict calls it. Rows are loci, columns verdicts.
+locus_verdicts <- read_tsv_safe(file.path(QC, "assembly", "well_verdicts_by_locus.tsv"))
+locus_verdict_table <- if (!is.null(locus_verdicts) && nrow(locus_verdicts)) {
+  verdict_order <- c("monoclonal", "multiclonal", "low_depth", "unannotated")
+  tab <- table(factor(locus_verdicts$locus),
+               factor(locus_verdicts$verdict, levels = verdict_order))
+  rows <- vapply(rownames(tab), function(locus) {
+    # fmt_int formats one number. Handed the row's four counts, its `&&` only
+    # warns on R 4.2 (the cluster) but stops the whole report from R 4.3 on.
+    paste0("<tr><td>", esc(locus), "</td>",
+           paste0("<td>", vapply(as.integer(tab[locus, ]), fmt_int, character(1)), "</td>",
+                  collapse = ""), "</tr>")
+  }, character(1))
+  paste0("<table><thead><tr><th>Locus</th><th>Monoclonal</th><th>Multiclonal</th>",
+         "<th>Low depth</th><th>Unannotated</th></tr></thead><tbody>",
+         paste0(rows, collapse = ""), "</tbody></table>")
+} else ""
+
 plate_table <- if (!is.null(plate_summary)) {
   rows <- apply(plate_summary, 1, function(r) {
     flag <- suppressWarnings(as.numeric(r[["wells_low"]])) > 0
@@ -922,6 +959,12 @@ html <- paste0(
           paste0("What the run found, rather than whether it ran. Gene usage, junction ",
                  "length, mutation load and clonal structure, read from the same IgBLAST ",
                  "annotation that produced the productive rate above.")) else "",
+
+  if (nzchar(locus_verdict_table)) section("Wells by locus", locus_verdict_table,
+          paste0("Each well's delivered records, grouped by locus and judged within it: monoclonal ",
+                 "when the second record of a locus holds at most a fifth of the first's reads. A well ",
+                 "with one heavy and one kappa chain is two monoclonal loci, one cell. Only delivered ",
+                 "records are counted, so a weak second clone below the per-well cut is not seen here.")) else "",
 
   if (NANOPORE) section("Nanopore read quality",
           paste0(fig_block("np_quality"), fig_block("np_length"), fig_block("np_orient")),

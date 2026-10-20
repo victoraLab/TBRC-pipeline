@@ -28,6 +28,70 @@ Typical packaged outputs include:
 - `igblast/`
 - `clonality/`
 
+## How a Run Flows
+
+A submission from the app or from `./tbrc` goes through the same launch scripts.
+The raw FASTQs move to the cluster, and a detached driver runs the chosen assembly
+pipeline under SLURM. Every pipeline ends in the same assembled FASTA, so
+everything after assembly is shared.
+
+```mermaid
+flowchart TD
+    subgraph submit["Submission"]
+        app["Shiny app<br/>writes sample.json"]
+        cli["./tbrc run<br/>same sample.json, same scripts"]
+        pre["preflight.bash<br/>names, source folder, disk space, FASTQ checks"]
+        launch["goServer.bash: FASTQ in a folder on the NAS<br/>goUpload.bash: FASTQ uploaded in the browser"]
+        app --> pre
+        cli --> pre
+        pre --> launch
+    end
+
+    nas[("Synology NAS<br/>raw FASTQ")]
+    scratch[("HPC scratch<br/>data/runs/USER/RUN/")]
+    nas -->|"goServer: rsync, run on the DTN"| scratch
+    launch -->|"sample.json, and uploaded FASTQ"| scratch
+
+    launch -->|"ssh to the login node, detached"| iso["run_isolated.sh USER-RUN<br/>its own .parallel/ working directory"]
+    iso --> sm["snakemake.sh and the Snakefile<br/>read sample.json, submit SLURM jobs"]
+    scratch --> sm
+    sm --> choice{"pipeline"}
+
+    choice -->|"classic_luka"| classic["trim_reads, pandaseq, genfasta"]
+    choice -->|"tiago_vsearch or tiago_sulkseq"| core["illumina_core<br/>adapter trim, vsearch merge,<br/>demultiplex, cluster each well"]
+    core -->|"tiago_vsearch"| vs["rank_and_emit<br/>dominant sequences per well"]
+    core -->|"tiago_sulkseq"| sulk["rank, annotate, clones, emit<br/>clone size = wells it appears in"]
+    choice -->|"tiago_nanopore"| np["demultiplex, abPOA consensus per well,<br/>annotate, VDJ, isotype, clonality, emit"]
+
+    contract[/"final.fasta, the output every pipeline produces<br/>split1/split2/collapsed/head/final/final.fasta"/]
+    classic --> contract
+    vs --> contract
+    sulk --> contract
+    np --> contract
+    contract --> final
+
+    subgraph final["rule final: final.script.sh"]
+        direction TB
+        f1["FASTA QC, trim the 5' handle"]
+        f2["plate QC"]
+        f3["receptor and species check<br/>detect_receptor.py"]
+        f4["IgBLAST<br/>per locus when a plate mixes species"]
+        f5["cut the primer footprint per locus,<br/>annotate again"]
+        f6["well verdicts per locus"]
+        f7["clonality, plate clonotype QC"]
+        f8["run report, HTML and PDF"]
+        f9["archive: zip or tar.gz, light or full scope"]
+        f1 --> f2 --> f3 --> f4 --> f5 --> f6 --> f7 --> f8 --> f9
+    end
+
+    f9 -->|"rsync push, or the NAS pulls"| results[("NAS results<br/>results/USER/ or results/USER/GROUP/")]
+    rerun["rerun_final.sh USER-RUN"] -.->|"rule refinal, no reassembly"| final
+```
+
+IgBLAST, the primer-footprint cut and clonality run only when the run asks for
+annotation. The handle trim is skipped where assembly already removed the handle
+(luka_light on classic_luka and tiago_sulkseq, and every tiago_nanopore run).
+
 ## Repository Layout
 
 - [`frontend/ui.R`](frontend/ui.R): Shiny UI
@@ -246,12 +310,12 @@ $ ./tbrc check
 [ OK ] data-transfer node reachable: user@dtn.hpc.example.org
 [ OK ] login node reachable: user@login.hpc.example.org
 [ OK ] pipeline root: /path/to/scratch/pipelines/TBRC
-[ OK ] snakemake.sh present and executable
+[ OK ] snakemake.sh and run_isolated.sh present and executable
 [ OK ] conda env 'snakemake'
 [ OK ] snakemake: 7.32.4
 [ OK ] pipeline tools: all present
 [ OK ] IgBLAST mouse ig_all panel built
-[ OK ] another run active on the cluster: no
+[ OK ] runs active on the cluster: 0
 [ OK ] free space under pipeline root: 573 GB
 == storage servers
 [ OK ] storage1 reachable: direct
@@ -345,6 +409,20 @@ found on the server, not enough space on the cluster, another run active, a fail
 and which log to read), and the full backend output is kept in the run folder's
 `backend.log`. Exit status is 2 for a usage or environment problem, 1 for a failed check
 or test, 0 on success.
+
+### Rerun the final stage of a finished run
+
+After an IgBLAST database or panel fix, or to re-make a report, there is no need to assemble
+again. On the cluster, from the pipeline root:
+
+```bash
+./rerun_final.sh <user>-<run>          # e.g. CMu-CMP15_all; `ls .parallel/` lists them
+./rerun_final.sh <user>-<run> --push   # also push the new archive, replacing the old one on the NAS
+```
+
+It reruns the receptor check, annotation, clonality, report and archive from
+`<sample>.final.fasta`, after copying the previous archive, report, tables and QC into
+`previous-<timestamp>/` in the run's result folder.
 
 ## HPC / Backend Installation
 
@@ -549,7 +627,7 @@ Two independent switches, often confused:
 | `qc/*.contig_lengths.png` | yes | yes |
 | `igblast/`, `clonality/` | yes | yes |
 | `ARCHIVE_CONTENTS.txt` | yes | yes |
-| `<sample>.final.fasta` (untrimmed) | no | yes |
+| `<sample>.final.fasta` (untrimmed; already trimmed on `luka_light`) | yes | yes |
 | `qc/plates/*.plate_*.png`, `qc/plates/*.panel.png` | no | yes |
 
 Every per-plate PNG is one page of a sibling multi-page PDF that `light` keeps, so the
