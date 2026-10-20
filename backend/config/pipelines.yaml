@@ -119,6 +119,23 @@ tiago_nanopore:
       plate_barcode_mm: 1
       primer_mm: 2
       min_insert_length: 250
+      # Constant-region primer(s) the plate cassette sits behind, 5'->3' as
+      # synthesised. The default is the IgA primer of the libraries the
+      # demultiplexer was written for, so a barcode set without an override
+      # demultiplexes exactly as before. A library amplified with any other
+      # reverse primer needs its own list: with the IgA primer only, IgG and
+      # kappa libraries had every plate cassette missed.
+      inner_reverse_primers: [CCACCATCTCCATGACTGCCA]
+    qc:
+      # Library-structure QC (nanopore_library_qc.py). An insert -- the bases
+      # between the 5' handle and the reverse primer -- shorter than this has no
+      # template in it and is called a primer dimer. On a kappa MinION test
+      # library the dimers formed a peak at 25-49 nt (the 23 nt kappa primer and
+      # a few bases), mispriming inside V a second one at 150-174 nt, and full
+      # V-J sat at 300-324 nt; 100 falls in the empty stretch between the first
+      # two. On a heavy library the handle is the primer, so a dimer is shorter.
+      # Between this and demux.min_insert_length a read is a short product.
+      dimer_max_insert: 100
     tools:
       # abpoa, racon, minimap2 and vsearch are not in the snakemake environment
       # that dispatches runs; they live in their own env so installing them
@@ -171,10 +188,25 @@ tiago_nanopore:
       # The demultiplexer cuts through the 31-nt B-set handle (GGG + EcoRI + the
       # F_007 heavy primer), so no heavy consensus keeps a primer (S86C34, M1:
       # V aligns from germline nt 24-32), while a kappa one keeps F_106 at its
-      # 5' end: JJ run 4's kappa inserts begin ATATTGTGATGACACAG, FR1 from nt 2
-      # as F_106 does. The 23 assumes JJ used F_106 itself. Cut per locus after
-      # annotation, as on tiago_vsearch.
+      # 5' end: kappa inserts begin ATATTGTGATGACACAG, FR1 from nt 2 as F_106
+      # does. Measured on a kappa MinION test library with trimming on: V
+      # aligned from germline nt 2-4 before the cut and from exactly nt 25 after
+      # it. Cut per locus after annotation, as on tiago_vsearch.
       primer_footprint: IGK=23
+
+  primer_set_overrides:
+    nanopore_IgG_IgK:
+      # The B-set well anchors and plate barcodes with IgG heavy and kappa light
+      # reverse primers. Read off the 21 nt that sit directly in front of the
+      # plate barcode in real reads: three IgG variants in a steady 2:1:1 ratio,
+      # so a primer mix rather than error, and one kappa primer -- the same one
+      # as tiago_vsearch's light_chain_3p.
+      demux:
+        inner_reverse_primers:
+          - GCTCAGGGAAATAGCCCTTGA
+          - GCTCAGGGAAATAACCCTTGA
+          - GCTCAGGGAAGTAGCCTTTGA
+          - GAGCTCGTGGGAGTGTCAGTG
 
 tiago_sulkseq:
   defaults:

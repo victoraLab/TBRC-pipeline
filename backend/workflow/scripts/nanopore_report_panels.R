@@ -148,3 +148,79 @@ np_plot_orientation <- function(read_qc, theme_extra = NULL) {
   if (!is.null(theme_extra)) p <- p + theme_extra
   p
 }
+
+# Library structure (nanopore_library_qc.py). A run with few wells can be a run
+# with too few reads, or a run whose PCR made mostly primer dimers -- they look
+# the same in every other panel.
+NP_LIB_LABELS <- c(
+  full_length = "Full length", short_product = "Short product", primer_dimer = "Primer dimer",
+  concatemer = "Concatemer", mixed_strands = "Mixed strands", no_3p_cassette = "No 3' cassette",
+  no_5p_handle = "No 5' handle", unrecognised = "Unrecognised")
+NP_LIB_COLOURS <- c(
+  full_length = "#1B6B4A", short_product = "#E0A030", primer_dimer = "#A31621",
+  concatemer = "#7A5AA8", mixed_strands = "#B07AA1", no_3p_cassette = "#8DA0B3",
+  no_5p_handle = "#B8C4D0", unrecognised = "#DADFE4")
+
+# Headline numbers for the report text, or NULL when the table is absent.
+np_library_summary <- function(lib_tbl) {
+  if (is.null(lib_tbl) || !all(c("scope", "class", "reads") %in% names(lib_tbl))) return(NULL)
+  a <- lib_tbl %>% filter(.data$scope == "all") %>%
+    mutate(reads = suppressWarnings(as.numeric(.data$reads)))
+  get1 <- function(k) { v <- a$reads[a$class == k]; if (length(v)) v[1] else 0 }
+  products <- get1("full_length") + get1("short_product") + get1("primer_dimer")
+  list(reads = sum(a$reads, na.rm = TRUE), products = products,
+       full = get1("full_length"), short = get1("short_product"), dimer = get1("primer_dimer"),
+       concatemer = get1("concatemer"),
+       dimer_share = if (products > 0) get1("primer_dimer") / products else NA_real_,
+       full_share = if (products > 0) get1("full_length") / products else NA_real_)
+}
+
+np_plot_library <- function(lib_tbl, theme_extra = NULL) {
+  if (is.null(lib_tbl) || !all(c("scope", "class", "reads") %in% names(lib_tbl))) return(NULL)
+  d <- lib_tbl %>% mutate(reads = suppressWarnings(as.numeric(.data$reads))) %>%
+    filter(!is.na(.data$reads), .data$class %in% names(NP_LIB_LABELS)) %>%
+    group_by(.data$scope) %>% mutate(share = .data$reads / sum(.data$reads)) %>% ungroup() %>%
+    mutate(class = factor(.data$class, levels = rev(names(NP_LIB_LABELS))),
+           scope = factor(ifelse(.data$scope == "all", "All reads", .data$scope),
+                          levels = c("All reads", setdiff(unique(.data$scope), "all"))))
+  if (!nrow(d)) return(NULL)
+  s <- np_library_summary(lib_tbl)
+  p <- ggplot(d, aes(x = .data$share, y = .data$scope, fill = .data$class)) +
+    geom_col(width = 0.7) +
+    scale_fill_manual(values = NP_LIB_COLOURS, labels = NP_LIB_LABELS, breaks = names(NP_LIB_LABELS),
+                      name = NULL) +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 1), expand = c(0, 0)) +
+    labs(x = "Share of reads", y = NULL, title = "Library structure",
+         subtitle = if (!is.null(s) && is.finite(s$dimer_share))
+           sprintf("Of %s reads with both primers: %.0f%% full length, %.0f%% primer dimer",
+                   format(s$products, big.mark = ","), 100 * s$full_share, 100 * s$dimer_share)
+         else "Reads classified by the primers they carry") +
+    theme_bw()
+  if (!is.null(theme_extra)) p <- p + theme_extra
+  p + theme(legend.position = "bottom")
+}
+
+np_plot_inserts <- function(ins_tbl, theme_extra = NULL, dimer_max = 100, min_insert = 250) {
+  if (is.null(ins_tbl) || !all(c("insert_bin_start", "reads") %in% names(ins_tbl))) return(NULL)
+  # The run's own thresholds, written beside the histogram, win over the defaults.
+  if ("dimer_max" %in% names(ins_tbl)) dimer_max <- suppressWarnings(as.numeric(ins_tbl$dimer_max[1]))
+  if ("min_insert" %in% names(ins_tbl)) min_insert <- suppressWarnings(as.numeric(ins_tbl$min_insert[1]))
+  d <- ins_tbl %>% mutate(x = suppressWarnings(as.numeric(.data$insert_bin_start)),
+                          reads = suppressWarnings(as.numeric(.data$reads))) %>%
+    filter(!is.na(.data$x), !is.na(.data$reads)) %>%
+    mutate(class = ifelse(.data$x < dimer_max, "primer_dimer",
+                   ifelse(.data$x < min_insert, "short_product", "full_length")))
+  if (!nrow(d)) return(NULL)
+  p <- ggplot(d, aes(x = .data$x, y = .data$reads, fill = .data$class)) +
+    geom_col(width = 10, just = 0) +
+    geom_vline(xintercept = c(dimer_max, min_insert), linetype = "dashed", colour = "grey30") +
+    scale_fill_manual(values = NP_LIB_COLOURS, labels = NP_LIB_LABELS, name = NULL) +
+    scale_y_continuous(labels = scales::comma) +
+    labs(x = "Insert between the primers (nt; last bin is 1000+)", y = "Reads",
+         title = "Insert length",
+         subtitle = sprintf("Under %d nt: primer dimer; %d-%d nt: short product; the pipeline uses %d nt and over",
+                            dimer_max, dimer_max, min_insert - 1, min_insert)) +
+    theme_bw()
+  if (!is.null(theme_extra)) p <- p + theme_extra
+  p + theme(legend.position = "bottom")
+}

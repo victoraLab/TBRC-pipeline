@@ -4,10 +4,11 @@ slurm_outs/*
 data/runs/*
 logs/*
 data/barcodes/*
-# the three barcode sets this repository ships
+# the barcode sets this repository ships
 !data/barcodes/B
 !data/barcodes/B2
 !data/barcodes/T
+!data/barcodes/nanopore_IgG_IgK
 results/*
 
 # host-local settings

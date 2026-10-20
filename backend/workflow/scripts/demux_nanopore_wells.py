@@ -16,6 +16,16 @@
 # would risk a regression for no benefit.
 #
 # Upstream is the authority. If it changes, re-vendor rather than diverge.
+#
+# ONE local change, and it is a parameter, not a rewrite: the inner reverse
+# primer that the plate cassette sits behind was a constant (the IgA primer the
+# upstream libraries used), so a library amplified with any other constant-region
+# primer had every plate cassette missed -- on IgG heavy and kappa light MinION
+# libraries no well-assigned read got a plate, although the plate barcode and the
+# adapter are right there behind the IgG and kappa primers.
+# --inner-reverse-primer (repeatable) defaults to the upstream constant, so a run
+# that does not pass it demultiplexes exactly as before. Carry this forward when
+# re-vendoring.
 """Orient, Well+Plate demultiplex, and trim both ends of long VDJ reads."""
 
 import argparse, gzip, math, re
@@ -86,13 +96,17 @@ def main():
     ap.add_argument("--primer-mm", type=int, default=2)
     ap.add_argument("--terminal-window", type=int, default=300)
     ap.add_argument("--min-insert-length", type=int, default=250)
+    ap.add_argument("--inner-reverse-primer", action="append", default=None,
+                    help="Constant-region primer the plate cassette follows, 5'->3' as synthesised; repeatable. "
+                         "Default: the upstream IgA primer " + INNER_REVERSE_PRIMER)
     args = ap.parse_args()
 
     anchors, plates_forward = table(args.well_anchors), table(args.plate_barcodes)
     if len(anchors) != 96 or len(plates_forward) != 16: raise SystemExit("Expected 96 well anchors and 16 plate barcodes")
     well_barcodes = {w:a[:-len(PARTIAL_FR1)] for w,a in anchors.items()}
     plates_read = {p:rc(b) for p,b in plates_forward.items()}
-    primer_read, adapter_read = rc(INNER_REVERSE_PRIMER), rc(ADAPTER)
+    primers_read = [rc(p.upper()) for p in (args.inner_reverse_primer or [INNER_REVERSE_PRIMER])]
+    adapter_read = rc(ADAPTER)
 
     prefix = Path(args.prefix)
     clean_path = Path(str(prefix)+".platewell_clean.fasta")
@@ -137,14 +151,15 @@ def main():
 
             pm=[]
             search_start=max(trim5,len(s)-args.terminal_window)
-            for pp,pmm in motif_positions(s,primer_read,args.primer_mm,search_start):
-                bstart=pp+len(primer_read); bend=bstart+10
-                if bend>len(s): continue
-                observed=s[bstart:bend]
-                calls=sorted((hd(observed,b),p) for p,b in plates_read.items())
-                if calls[0][0]<=args.plate_barcode_mm:
-                    tied=[p for d,p in calls if d==calls[0][0]]
-                    if len(tied)==1: pm.append((pmm,calls[0][0],tied[0],pp,bend,s))
+            for primer_read in primers_read:
+                for pp,pmm in motif_positions(s,primer_read,args.primer_mm,search_start):
+                    bstart=pp+len(primer_read); bend=bstart+10
+                    if bend>len(s): continue
+                    observed=s[bstart:bend]
+                    calls=sorted((hd(observed,b),p) for p,b in plates_read.items())
+                    if calls[0][0]<=args.plate_barcode_mm:
+                        tied=[p for d,p in calls if d==calls[0][0]]
+                        if len(tied)==1: pm.append((pmm,calls[0][0],tied[0],pp,bend,s))
             if not pm:
                 bump("well_only_missing_plate_cassette",source); by_well[well]["partial"]+=1
                 insert=s[trim5:]

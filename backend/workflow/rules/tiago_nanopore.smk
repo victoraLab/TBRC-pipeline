@@ -45,6 +45,15 @@ _NP_INPUTS = NANOPORE_INPUTS if NANOPORE_INPUTS else [READ1_GZ]
 # BC1/BC2 files the Illumina pipelines use, so a run selects them the same way.
 _BC_DIR = "data/barcodes/{}".format(PRIMER_SET) if PRIMER_SET else "data/barcodes"
 
+# Reverse primers the plate cassette follows; per barcode set, see
+# pipelines.yaml. Checked here because they are pasted into a shell command, and
+# a typo should stop the run at parse time rather than demultiplex nothing.
+_NP_REV_PRIMERS = param("demux", "inner_reverse_primers", []) or []
+for _p in _NP_REV_PRIMERS:
+    if not re.fullmatch(r"[ACGTacgt]{15,40}", str(_p)):
+        raise ValueError("tiago_nanopore: inner_reverse_primers entry {!r} is not a 15-40 nt ACGT primer".format(_p))
+_NP_REV_ARGS = " ".join("--inner-reverse-primer {}".format(str(p).upper()) for p in _NP_REV_PRIMERS)
+
 
 rule demux_nanopore:
     input:
@@ -64,6 +73,7 @@ rule demux_nanopore:
         plate_mm=param("demux", "plate_barcode_mm", 1),
         primer_mm=param("demux", "primer_mm", 2),
         min_insert=param("demux", "min_insert_length", 250),
+        rev_primers=_NP_REV_ARGS,
         extra=lambda w, input: " ".join(
             "--extra-fastq '{}'".format(p) for p in list(input.reads)[1:]
         ),
@@ -80,6 +90,7 @@ rule demux_nanopore:
             --plate-barcode-mm {params.plate_mm} \
             --primer-mm {params.primer_mm} \
             --min-insert-length {params.min_insert} \
+            {params.rev_primers} \
             {params.extra} > {log} 2>&1
         # A library sequenced one plate per file legitimately has no plate
         # cassette, and its reads land in the well-only file instead. Both
@@ -87,6 +98,48 @@ rule demux_nanopore:
         touch {output.clean} {output.partial}
         cp "{params.prefix}.platewell_summary.tsv" {output.summary} 2>/dev/null || \
             printf 'section\tid\tmetric\tvalue\n' > {output.summary}
+        """
+
+
+rule library_qc_nanopore:
+    """What the PCR made: full-length products, short products, primer dimers,
+    concatemers, and reads too broken to tell.
+
+    The demultiplexer only keeps what it can use, and its counters do not say
+    why a library yields little: a library whose PCR made mostly primer dimers
+    reads as a run with too few reads until this is measured. Descriptive only:
+    it changes nothing downstream."""
+    input:
+        reads=_NP_INPUTS,
+    output:
+        summary="{}/qc/nanopore/{}.library_qc.tsv".format(_RUNDIR, _SAMPLE),
+        inserts="{}/qc/nanopore/{}.library_qc_inserts.tsv".format(_RUNDIR, _SAMPLE),
+        wells="{}/qc/nanopore/{}.library_qc_wells.tsv".format(_RUNDIR, _SAMPLE),
+    log:
+        "logs/{}.nanopore_library_qc.log".format(_SAMPLE),
+    threads: 4
+    params:
+        prefix="{}/qc/nanopore/{}".format(_RUNDIR, _SAMPLE),
+        anchors="{}/BCFR1_anchors.tsv".format(_BC_DIR),
+        plates="{}/plate_barcodes.tsv".format(_BC_DIR),
+        well_mm=param("demux", "well_barcode_mm", 2),
+        plate_mm=param("demux", "plate_barcode_mm", 1),
+        primer_mm=param("demux", "primer_mm", 2),
+        min_insert=param("demux", "min_insert_length", 250),
+        dimer_max=param("qc", "dimer_max_insert", 100),
+        rev_primers=_NP_REV_ARGS,
+        reads=lambda w, input: " ".join("'{}'".format(p) for p in input.reads),
+    shell:
+        r"""
+        set -euo pipefail
+        {_NP_PATH}
+        mkdir -p "$(dirname {output.summary})"
+        python3 {_SCRIPTS}/nanopore_library_qc.py {params.reads} \
+            --well-anchors '{params.anchors}' --plate-barcodes '{params.plates}' \
+            --prefix '{params.prefix}' {params.rev_primers} \
+            --primer-mm {params.primer_mm} --well-barcode-mm {params.well_mm} \
+            --plate-barcode-mm {params.plate_mm} --min-insert {params.min_insert} \
+            --dimer-max {params.dimer_max} --jobs {threads} > {log} 2>&1
         """
 
 
@@ -276,6 +329,9 @@ rule emit_nanopore:
         table=rules.consensus_nanopore.output.table,
         vdj=rules.vdj_consensus_nanopore.output.fasta,
         final_table=rules.clonality_nanopore.output.table,
+        # Not used by this rule: listed so the library QC exists before final
+        # builds the report and the archive.
+        library_qc=rules.library_qc_nanopore.output.summary,
     output:
         marker="{}/split1/{}".format(_RUNDIR, _SAMPLE),
         final="{}/split1/split2/collapsed/head/final/final.fasta".format(_RUNDIR),

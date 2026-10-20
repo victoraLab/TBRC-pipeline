@@ -161,7 +161,8 @@ local({
   RC$comp <<- read_tsv_safe(file.path(QC, "receptor", "locus_composition.tsv"))
 })
 
-NP <- list(read_qc = NULL, summary = NULL, cons = NULL, assign = NULL)
+NP <- list(read_qc = NULL, summary = NULL, cons = NULL, assign = NULL,
+           lib = NULL, lib_inserts = NULL, lib_sum = NULL)
 if (NANOPORE) {
   panels <- file.path(SCRIPT_DIR, "nanopore_report_panels.R")
   if (file.exists(panels)) {
@@ -173,6 +174,10 @@ if (NANOPORE) {
     NP$cons    <- np_read_tsv(file.path(QC, "nanopore",
                                         paste0(SAMPLE, ".consensus_per_well.tsv")))
     NP$assign  <- np_assignment(NP$summary)
+    NP$lib     <- np_read_tsv(file.path(QC, "nanopore", paste0(SAMPLE, ".library_qc.tsv")))
+    NP$lib_inserts <- np_read_tsv(file.path(QC, "nanopore",
+                                            paste0(SAMPLE, ".library_qc_inserts.tsv")))
+    if (exists("np_library_summary")) NP$lib_sum <- np_library_summary(NP$lib)
   }
 }
 
@@ -333,6 +338,12 @@ if (NANOPORE && exists("np_plot_quality")) {
     "How many reads each consensus was built from. Sequencing error averages away with depth; real somatic hypermutation does not.")
   add_plot("np_orient", np_plot_orientation(NP$read_qc, gvic_theme), 7, 3.8,
     "Reads arrive on both strands and are oriented during demultiplexing.")
+  if (exists("np_plot_library")) {
+    add_plot("np_library", np_plot_library(NP$lib, gvic_theme), 9, 3.8,
+      "Every read, classed by the primers it carries. Grey classes are reads too broken to place; the coloured ones are what the PCR made.")
+    add_plot("np_inserts", np_plot_inserts(NP$lib_inserts, gvic_theme), 9, 4.4,
+      "Bases between the 5' handle and the reverse primer. A peak under the first line is primer dimer: no template between the primers.")
+  }
 }
 
 if (!is.null(REP$airr) && exists("rep_plot_vgene")) {
@@ -946,6 +957,10 @@ html <- paste0(
       tile(fmt_pct(pct), "Probable doublets",
            if (is.finite(pct) && pct > 20) "warn" else "")
     } else "",
+    if (NANOPORE && !is.null(NP$lib_sum) && is.finite(NP$lib_sum$dimer_share)) {
+      tile(fmt_pct(100 * NP$lib_sum$dimer_share), "Primer dimers (of PCR products)",
+           if (NP$lib_sum$dimer_share > 0.2) "warn" else "")
+    } else "",
     "</table>") else "",
 
   annotation_note,
@@ -965,6 +980,14 @@ html <- paste0(
                  "when the second record of a locus holds at most a fifth of the first's reads. A well ",
                  "with one heavy and one kappa chain is two monoclonal loci, one cell. Only delivered ",
                  "records are counted, so a weak second clone below the per-well cut is not seen here.")) else "",
+
+  if (NANOPORE && !is.null(NP$lib)) section("Library structure",
+          paste0(fig_block("np_library"), fig_block("np_inserts")),
+          paste0("What the PCR made, before any well is called. A run with few wells is either short ",
+                 "of reads or short of product, and only this tells them apart: primer dimers and short ",
+                 "products carry both primers and a well barcode, so the demultiplexer finds them and ",
+                 "then drops them as too short. The per-well counts are in qc/nanopore/",
+                 SAMPLE, ".library_qc_wells.tsv.")) else "",
 
   if (NANOPORE) section("Nanopore read quality",
           paste0(fig_block("np_quality"), fig_block("np_length"), fig_block("np_orient")),
