@@ -819,4 +819,6 @@ local({
   if (file.exists(runlog_module)) source(runlog_module, local = FALSE)
   changelog_module <- app_path("tab_changelog.R")
   if (file.exists(changelog_module)) source(changelog_module, local = FALSE)
+  pipeline_module <- app_path("tab_pipeline.R")
+  if (file.exists(pipeline_module)) source(pipeline_module, local = FALSE)
 })

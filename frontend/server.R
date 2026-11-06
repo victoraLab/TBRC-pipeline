@@ -1785,6 +1785,7 @@ server <- function(input, output, session) {
 
   runlogServer("runlog")
   changelogServer("changelog")
+  pipelineServer("pipelines")
 
   # Update the choices for the folder dropdown
   observe({

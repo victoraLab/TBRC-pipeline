@@ -737,6 +737,10 @@ shinyUI(fluidPage(theme = shinytheme("flatly"),
           tags$div(style = "padding-top:14px;", runlogUI("runlog"))
         ),
         tabPanel(
+          "Pipelines",
+          tags$div(style = "padding-top:14px;", pipelineUI("pipelines"))
+        ),
+        tabPanel(
           "What changed",
           tags$div(style = "padding-top:14px;", changelogUI("changelog"))
         )

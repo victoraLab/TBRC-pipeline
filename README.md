@@ -33,17 +33,21 @@ Typical packaged outputs include:
 A submission from the app or from `./tbrc` goes through the same launch scripts.
 The raw FASTQs move to the cluster, and a detached driver runs the chosen assembly
 pipeline under SLURM. Every pipeline ends in the same assembled FASTA, so
-everything after assembly is shared.
+everything after assembly is shared. Each assembly pipeline and the final stage
+have their own diagram in [`docs/pipeline-diagrams.md`](docs/pipeline-diagrams.md),
+which the app's Pipelines tab also shows. That file repeats this diagram, so
+change both together.
 
 ```mermaid
 flowchart TD
     subgraph submit["Submission"]
         app["Shiny app<br/>writes sample.json"]
-        cli["./tbrc run<br/>same sample.json, same scripts"]
-        pre["preflight.bash<br/>names, source folder, disk space, FASTQ checks"]
-        launch["goServer.bash: FASTQ in a folder on the NAS<br/>goUpload.bash: FASTQ uploaded in the browser"]
-        app --> pre
-        cli --> pre
+        cli["./tbrc run<br/>same sample.json, its own checks"]
+        pre["preflight.bash<br/>names, source folder, FASTQ pairing and integrity"]
+        launch["goServer.bash: FASTQ in a folder on the NAS,<br/>checks free space on the DTN first<br/>goUpload.bash: FASTQ uploaded in the browser"]
+        app -->|"server mode"| pre
+        app -->|"upload"| launch
+        cli --> launch
         pre --> launch
     end
 
@@ -59,7 +63,7 @@ flowchart TD
 
     choice -->|"classic_luka"| classic["trim_reads, pandaseq, genfasta"]
     choice -->|"tiago_vsearch or tiago_sulkseq"| core["illumina_core<br/>adapter trim, vsearch merge,<br/>demultiplex, cluster each well"]
-    core -->|"tiago_vsearch"| vs["rank_and_emit<br/>dominant sequences per well"]
+    core -->|"tiago_vsearch"| vs["rank_and_emit<br/>top N clusters per well"]
     core -->|"tiago_sulkseq"| sulk["rank, annotate, clones, emit<br/>clone size = wells it appears in"]
     choice -->|"tiago_nanopore"| np["demultiplex, abPOA consensus per well,<br/>annotate, VDJ, isotype, clonality, emit"]
 
@@ -75,7 +79,7 @@ flowchart TD
         f1["FASTA QC, trim the 5' handle"]
         f2["plate QC"]
         f3["receptor and species check<br/>detect_receptor.py"]
-        f4["IgBLAST<br/>per locus when a plate mixes species"]
+        f4["IgBLAST<br/>per locus when loci need different germline sets"]
         f5["cut the primer footprint per locus,<br/>annotate again"]
         f6["well verdicts per locus"]
         f7["clonality, plate clonotype QC"]
