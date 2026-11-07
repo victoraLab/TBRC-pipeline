@@ -2371,13 +2371,13 @@ server <- function(input, output, session) {
         return()
       }
       # Shiny deletes an upload's temporary files when its session ends, which
-      # can now come before goUpload.bash has copied them. Put them where that
-      # script would copy them to (runs/<user>/<R1 name minus its extension>/)
-      # before it starts; it skips a copy onto the same file.
-      upload_dir <- file.path(RUNS_DIR, input$user_id,
-                              sub("\\.[^.]*$", "", input$input_files$name[r1_index]))
-      dir.create(upload_dir, showWarnings = FALSE, recursive = TRUE)
-      staged_reads <- file.path(upload_dir, input$input_files$name[c(r1_index, r2_index)])
+      # can come before goUpload.bash has copied them. Put them in the run
+      # folder, beside sample.json, which is the folder goUpload.bash ships to
+      # the cluster or stages on this host (-r names it); it skips a copy onto
+      # the same file. They used to go to runs/<user>/<R1 name minus its
+      # extension>/, and goUpload.bash used that name for the run folder too,
+      # so the cluster was pointed at a folder without sample.json.
+      staged_reads <- file.path(path, input$input_files$name[c(r1_index, r2_index)])
       if (!all(file.copy(input$input_files$datapath[c(r1_index, r2_index)], staged_reads,
                          overwrite = TRUE))) {
         shinyalert(title = "Oops!", text = "The uploaded FASTQ files could not be staged for the run.",
@@ -2389,8 +2389,12 @@ server <- function(input, output, session) {
         "-d", staged_reads[1],
         "-e", staged_reads[2],
         "-n", input$input_files$name[r1_index],
-        "-m", input$input_files$name[r2_index]
+        "-m", input$input_files$name[r2_index],
+        "-r", basename(path)
       )
+      if (isTRUE(input$run_local) && isTRUE(LOCAL_BACKEND$available)) {
+        cmd_args <- c(cmd_args, "-l")
+      }
 
       launch_submission(app_script("goUpload.bash"), cmd_args, path, run_started_at,
                         input_bytes = estimated_input_bytes())

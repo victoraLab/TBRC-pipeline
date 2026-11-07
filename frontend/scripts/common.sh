@@ -173,3 +173,67 @@ dispatch_detached() {
     done
     return "${code}"
 }
+
+# ---- runs on this host ("Run on this server") ---------------------------------
+# A cluster run gets its folder (sample.json, a MIBS design, uploaded reads)
+# shipped to <pipeline_root>/data/runs/<user>/<run>/ and its raw data pulled
+# there by the DTN. A run on this host needs the same two things in this host's
+# backend/data/runs/<user>/<run>/. The local branch of goServer.bash used to
+# start Snakemake on that folder without putting anything in it, so every local
+# run stopped at DAG build ("Expected exactly one R1 and one R2 FASTQ.gz").
+
+# Refuse before any data moves when this host cannot run the workflow. The app
+# hides the switch in that case; this guards a direct call.
+require_local_backend() {
+    local tool
+    if [[ ! -d "${BACKEND_DIR}" ]]; then
+        echo "Cannot run locally: no backend directory at ${BACKEND_DIR}." >&2
+        echo "This host received only the frontend. Submit to the HPC cluster instead." >&2
+        exit 1
+    fi
+    for tool in snakemake pandaseq cutadapt fastx_trimmer; do
+        if ! command -v "${tool}" >/dev/null 2>&1; then
+            echo "Cannot run locally: ${tool} is not installed on this host." >&2
+            echo "Submit to the HPC cluster instead." >&2
+            exit 1
+        fi
+    done
+}
+
+# Usage: stage_run_locally USER RUN -- the app's run folder into the workflow's.
+stage_run_locally() {
+    local target="${BACKEND_DIR}/data/runs/$1/$2"
+    mkdir -p "${target}"
+    rsync -a "${RUNS_DIR}/$1/$2/" "${target}/"
+}
+
+# Bytes of FASTQ in a folder, for the app's runtime estimate (TBRC_INPUT_BYTES).
+local_fastq_bytes() {
+    local f total=0
+    while IFS= read -r -d '' f; do
+        total=$(( total + $(wc -c < "${f}") ))
+    done < <(find "$1" -maxdepth 2 -type f \( -name '*.fastq' -o -name '*.fastq.gz' -o -name '*.fq' -o -name '*.fq.gz' \) \
+                 ! -path '*/@eaDir/*' -print0 2>/dev/null)
+    echo "${total}"
+}
+
+# Run the workflow here, in the foreground; the app already runs this script in
+# the background. Usage: run_locally RUN_KEY DATA_TABLE INPUTPATH PATH_PREFIX SNAKEMAKE_ENV
+run_locally() {
+    local key="$1" table="$2" inputs="$3" path_prefix="$4" env_name="$5"
+    cd "${BACKEND_DIR}"
+    # PATH_PREFIX and the named Conda environment describe the cluster. In a
+    # container the tools are already on PATH in Conda's base environment, and
+    # forcing the cluster's PATH would hide them. Apply each only where it exists.
+    if [[ -n "${path_prefix}" && -d "${path_prefix%%:*}" ]]; then
+        export PATH="${path_prefix}"
+    fi
+    if [[ -n "${env_name}" && "${env_name}" != "base" ]] \
+       && command -v conda >/dev/null 2>&1 \
+       && conda env list 2>/dev/null | awk '{print $1}' | grep -qx "${env_name}"; then
+        conda activate "${env_name}"
+    fi
+    # Jobs run on this host, not through sbatch (backend/snakemake.sh).
+    export DATA_TABLE="${table}" INPUTPATH="${inputs}" TBRC_EXECUTOR=local
+    ./run_isolated.sh "${key}" "${table}" "${inputs}"
+}

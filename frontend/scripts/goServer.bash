@@ -76,38 +76,35 @@ if [[ "${LOCAL_RUN}" == "1" ]]; then
   # The app gates this toggle on capability, but guard here too: a deploy that
   # ships only frontend/ has no sibling backend/, and the bare "cd" failure this
   # replaces was the single largest cause of run failures.
-  if [[ ! -d "${BACKEND_DIR}" ]]; then
-    echo "Cannot run locally: no backend directory at ${BACKEND_DIR}." >&2
-    echo "This host received only the frontend. Submit to the HPC cluster instead." >&2
+  require_local_backend
+
+  # The same two steps as the cluster branch below, onto this host: pull the raw
+  # folder into backend/data/runs/<user>/, then put the app's run folder
+  # (sample.json, a MIBS design) beside it. There is no DTN here, so this host
+  # must reach the storage server itself, over one ssh hop.
+  STORAGE_SSH_ARGS=()
+  if [[ -n "${STORAGE_SERVER_SSH_PORT}" && "${STORAGE_SERVER_SSH_PORT}" != "null" ]]; then
+    STORAGE_SSH_ARGS=(-p "${STORAGE_SERVER_SSH_PORT}")
+  fi
+  if ! ssh -n -o BatchMode=yes -o ConnectTimeout=8 ${STORAGE_SSH_ARGS[@]+"${STORAGE_SSH_ARGS[@]}"} \
+       "${REMOTE_STORAGE_HOST}" true >/dev/null 2>&1; then
+    echo "Cannot run locally: this host cannot reach ${STORAGE_SERVER_NAME} (${REMOTE_STORAGE_HOST}) over ssh." >&2
+    echo "A run on this server pulls its raw data itself. Check the ssh key and config mounted into the app, or upload the FASTQ pair instead." >&2
+    exit 1
+  fi
+  if ! ssh -n ${STORAGE_SSH_ARGS[@]+"${STORAGE_SSH_ARGS[@]}"} "${REMOTE_STORAGE_HOST}" \
+       "test -d $(shq "${REMOTE_INPUT_PATH}")"; then
+    echo "Folder not found on ${STORAGE_SERVER_NAME}: ${INPUT_FOLDER}" >&2
     exit 1
   fi
 
-  for tool in snakemake pandaseq cutadapt fastx_trimmer; do
-    if ! command -v "${tool}" >/dev/null 2>&1; then
-      echo "Cannot run locally: ${tool} is not installed on this host." >&2
-      echo "Submit to the HPC cluster instead." >&2
-      exit 1
-    fi
-  done
+  mkdir -p "${BACKEND_DIR}/data/runs/${USER_ID}"
+  rsync -a -P --exclude='@eaDir/' --exclude='@eaDir' -e "ssh ${STORAGE_SSH_ARGS[*]-}" \
+    "${RAWDATA_SERVER}${INPUT_FOLDER}" "${BACKEND_DIR}/data/runs/${USER_ID}/"
+  stage_run_locally "${USER_ID}" "${RUN_NAME}"
+  echo "TBRC_INPUT_BYTES=$(local_fastq_bytes "${BACKEND_DIR}/${INPUTPATH}")"
 
-  cd "${BACKEND_DIR}"
-  export DATA_TABLE="${DATA_TABLE}"
-  export INPUTPATH="${INPUTPATH}"
-
-  # PATH_PREFIX and the named Conda environment describe the RU cluster. In a
-  # container the tools are already on PATH in Conda's base environment, and
-  # forcing the cluster's PATH would hide them. Apply each only where it exists.
-  if [[ -n "${PATH_PREFIX}" && -d "${PATH_PREFIX%%:*}" ]]; then
-    export PATH="${PATH_PREFIX}"
-  fi
-
-  if [[ -n "${SNAKEMAKE_ENV}" && "${SNAKEMAKE_ENV}" != "base" ]] \
-     && command -v conda >/dev/null 2>&1 \
-     && conda env list 2>/dev/null | awk '{print $1}' | grep -qx "${SNAKEMAKE_ENV}"; then
-    conda activate "${SNAKEMAKE_ENV}"
-  fi
-
-  ./run_isolated.sh "${RUN_KEY}" "${DATA_TABLE}" "${INPUTPATH}"
+  run_locally "${RUN_KEY}" "${DATA_TABLE}" "${INPUTPATH}" "${PATH_PREFIX}" "${SNAKEMAKE_ENV}"
   exit 0
 fi
 

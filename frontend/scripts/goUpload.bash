@@ -3,21 +3,24 @@
 source "$(cd "$(dirname "$0")" && pwd)/common.sh"
 
 require_tool rsync
-require_tool ssh
 
 USER_ID=""
 DATA_PATH_1=""
 DATA_PATH_2=""
 FILE_NAME_1=""
 FILE_NAME_2=""
+RUN_NAME=""
+LOCAL_RUN=0
 
-while getopts "u:d:e:n:m:" flag; do
+while getopts "u:d:e:n:m:r:l" flag; do
     case "${flag}" in
         u) USER_ID="${OPTARG}" ;;
         d) DATA_PATH_1="${OPTARG}" ;;
         e) DATA_PATH_2="${OPTARG}" ;;
         n) FILE_NAME_1="${OPTARG}" ;;
         m) FILE_NAME_2="${OPTARG}" ;;
+        r) RUN_NAME="${OPTARG}" ;;
+        l) LOCAL_RUN=1 ;;
         *) echo "Invalid option" >&2; exit 1 ;;
     esac
 done
@@ -60,10 +63,23 @@ PIPELINE_ROOT="$(json_get_cluster_field pipeline_root)"
 SNAKEMAKE_ENV="$(json_get_cluster_field snakemake_env)"
 PATH_PREFIX="$(json_get_cluster_field path_prefix)"
 
-RUN_DIR="${RUNS_DIR}/${USER_ID}/${FILE_NAME_1%.*}"
+# The run folder is the one the app wrote sample.json into, named by the run
+# name (-r): the read names without _S1/_R1/_001 and the extension. It used to
+# be derived here from the R1 file name minus its last extension
+# (plateA_S1_R1_001.fastq), a folder holding the reads but no sample.json, so
+# every upload of normally named reads stopped at DAG build on the cluster.
+# Without -r the old name is kept, for a caller that still passes none.
+RUN_NAME="${RUN_NAME:-${FILE_NAME_1%.*}}"
+validate_path_segment "${RUN_NAME}" "Run name"
+
+if [[ "${LOCAL_RUN}" == "1" ]]; then
+    require_local_backend
+fi
+
+RUN_DIR="${RUNS_DIR}/${USER_ID}/${RUN_NAME}"
 mkdir -p "${RUN_DIR}"
-# The app now stages uploads here itself, so the source may already be the
-# target; cp refuses to copy a file onto itself.
+# The app stages uploads here itself, so the source may already be the target;
+# cp refuses to copy a file onto itself.
 [[ "${DATA_PATH_1}" -ef "${RUN_DIR}/${FILE_NAME_1}" ]] || cp "${DATA_PATH_1}" "${RUN_DIR}/${FILE_NAME_1}"
 [[ "${DATA_PATH_2}" -ef "${RUN_DIR}/${FILE_NAME_2}" ]] || cp "${DATA_PATH_2}" "${RUN_DIR}/${FILE_NAME_2}"
 INPUT_BYTES="$(
@@ -73,10 +89,20 @@ INPUT_BYTES="$(
 INPUT_BYTES="$(printf '%s\n' "${INPUT_BYTES}" | awk '{sum+=$1} END {print sum+0}')"
 echo "TBRC_INPUT_BYTES=${INPUT_BYTES:-0}"
 
-rsync -a -P "${RUNS_DIR}/${USER_ID}" "${DTN_HOST}:${PIPELINE_ROOT}/data/runs/"
+DATA_TABLE="data/runs/${USER_ID}/${RUN_NAME}/sample.json"
+INPUTPATH="data/runs/${USER_ID}/${RUN_NAME}"
+RUN_KEY="${USER_ID}-${RUN_NAME}"
 
-DATA_TABLE="data/runs/${USER_ID}/${FILE_NAME_1%.*}/sample.json"
-INPUTPATH="data/runs/${USER_ID}/${FILE_NAME_1%.*}"
+if [[ "${LOCAL_RUN}" == "1" ]]; then
+    # This host runs the workflow: the run folder, reads included, goes to
+    # backend/data/runs/<user>/<run>/ and nothing is sent anywhere.
+    stage_run_locally "${USER_ID}" "${RUN_NAME}"
+    run_locally "${RUN_KEY}" "${DATA_TABLE}" "${INPUTPATH}" "${PATH_PREFIX}" "${SNAKEMAKE_ENV}"
+    exit 0
+fi
+
+require_tool ssh
+rsync -a -P "${RUNS_DIR}/${USER_ID}" "${DTN_HOST}:${PIPELINE_ROOT}/data/runs/"
 
 # Every value is quoted with shq() (printf %q) rather than wrapped in literal
 # single quotes, so nothing a value contains can end its own quoting.
@@ -84,4 +110,4 @@ INPUTPATH="data/runs/${USER_ID}/${FILE_NAME_1%.*}"
 # submissions do not refuse each other; started detached, so the run survives
 # this connection.
 dispatch_detached "${SSH_HOST}" "${PIPELINE_ROOT}" "${PATH_PREFIX}" "${SNAKEMAKE_ENV}" \
-  "${USER_ID}-${FILE_NAME_1%.*}" "${DATA_TABLE}" "${INPUTPATH}"
+  "${RUN_KEY}" "${DATA_TABLE}" "${INPUTPATH}"

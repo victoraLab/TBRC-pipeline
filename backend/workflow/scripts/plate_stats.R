@@ -124,7 +124,14 @@ parse_count_table <- function(path) {
 }
 
 parse_quality_table <- function(path) {
-  df_quality <- read.table(path, fill = TRUE, sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+  # check.names = FALSE: the column names are well files named after the sample,
+  # and R's default rewrites any that are not syntactic names. A sample called
+  # 1-plateA (what the app derives from 1-plateA_S1_R1_001.fastq.gz)
+  # became X1.plateAP01A01.fasta, the sample-name prefix no longer matched,
+  # and every well parsed as C1: plate_quality.tsv doubled its rows and lost
+  # every score.
+  df_quality <- read.table(path, fill = TRUE, sep = "\t", header = TRUE, stringsAsFactors = FALSE,
+                           check.names = FALSE)
   parsed_cols <- lapply(colnames(df_quality), split_token, sample_name = sample_name)
   colnames(df_quality) <- vapply(parsed_cols, function(x) {
     if (is.na(x$plate_id) || is.na(x$well)) NA_character_ else paste0(x$plate_id, "_", x$well)

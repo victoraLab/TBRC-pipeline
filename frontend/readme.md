@@ -59,3 +59,10 @@ Important behavior:
 - server-mode submissions validate the requested storage folder before launching the backend
 - upload-mode submissions write files under the configured backend input area
 - archive delivery is controlled by backend settings carried through `server_config.json`
+- "Run on this server" (shown only where `backend/` and the pipeline tools are present, e.g. the
+  `unified` image) runs the workflow on the app's own host, in both modes: the run folder (and, in
+  server mode, the raw folder, pulled over one ssh hop from the storage server) is staged into
+  `backend/data/runs/<user>/<run>/`, and the jobs run there instead of through `sbatch`
+  (`TBRC_EXECUTOR=local`; `TBRC_LOCAL_CORES` caps the cores, default all). With the storage server's
+  `transfer_mode` set to `pull`, the archive stays in `backend/results/<user>/<run>/`.
+  `scripts/tests/test_launch_staging.sh` checks all four launch paths without touching a server.

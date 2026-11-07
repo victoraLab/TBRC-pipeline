@@ -71,9 +71,24 @@ fi
 # --rerun-incomplete: redo anything a previous interrupted run left half-written.
 # Extra arguments go to snakemake as they are; rerun_final.sh uses them to ask
 # for the refinal target instead of the whole run.
-snakemake \
-    -j 9999 \
-    --rerun-incomplete \
-    --cluster-config config/cluster.json \
-    --cluster "sbatch --partition {cluster.partition} --job-name {cluster.name} -o {cluster.output} -e {cluster.error} --ntasks-per-node 1 --time {cluster.time} --mem {cluster.mem} --cpus-per-task {cluster.cpus_per_task}" \
-    "$@"
+#
+# A run on the app's own host ("Run on this server": run_locally in
+# frontend/scripts/common.sh) has no SLURM. It sets TBRC_EXECUTOR=local and the
+# jobs run here, on TBRC_LOCAL_CORES cores (default: every core this host or
+# container has). Until this existed, every such run died at its first job with
+# "sbatch: not found". Only the explicit setting selects it, never a missing
+# sbatch, so a cluster host with a broken PATH fails loudly instead of running
+# every rule on the login node.
+if [[ "${TBRC_EXECUTOR:-cluster}" == "local" ]]; then
+    snakemake \
+        --cores "${TBRC_LOCAL_CORES:-$(nproc 2>/dev/null || echo 4)}" \
+        --rerun-incomplete \
+        "$@"
+else
+    snakemake \
+        -j 9999 \
+        --rerun-incomplete \
+        --cluster-config config/cluster.json \
+        --cluster "sbatch --partition {cluster.partition} --job-name {cluster.name} -o {cluster.output} -e {cluster.error} --ntasks-per-node 1 --time {cluster.time} --mem {cluster.mem} --cpus-per-task {cluster.cpus_per_task}" \
+        "$@"
+fi
