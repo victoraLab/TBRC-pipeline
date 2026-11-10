@@ -855,11 +855,11 @@ elif [[ -n "${SERVER_RESULTS_PATH:-}" && "${SERVER_RESULTS_PATH}" != "NA" ]]; th
 
     echo "Transfer destination: ${REMOTE_RESULTS_DIR}"
     echo "Transfer ssh port: ${SERVER_SSH_PORT:-default}"
-    ssh "${SSH_ARGS[@]}" "${REMOTE_HOST}" "mkdir -p '${REMOTE_PATH%/}'"
+    ssh "${SSH_ARGS[@]}" "${REMOTE_HOST}" "mkdir -p $(printf %q "${REMOTE_PATH%/}")"
     rsync -avP "${RSYNC_SSH[@]}" "${ARCHIVE_PATH}" "${REMOTE_RESULTS_DIR}"
     REMOTE_FILE_PATH="${REMOTE_PATH%/}/$(basename "${ARCHIVE_PATH}")"
     echo "Remote file check: ${REMOTE_HOST}:${REMOTE_FILE_PATH}"
-    ssh "${SSH_ARGS[@]}" "${REMOTE_HOST}" "ls -lh '${REMOTE_FILE_PATH}'"
+    ssh "${SSH_ARGS[@]}" "${REMOTE_HOST}" "ls -lh $(printf %q "${REMOTE_FILE_PATH}")"
 fi
 
 echo "${SERVER_STORAGE} ok."
@@ -873,9 +873,10 @@ send_notification_email() {
         echo "Notification email skipped: no recipient provided." >&2
         return 0
     fi
-    if [[ ! "${recipient}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+    if [[ ! "${recipient}" =~ ^[A-Za-z0-9._%+][A-Za-z0-9._%+-]*@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
         # The app checks this too. Re-checked here because a script that hands a
         # value to the mail command should not rely on its caller being correct.
+        # (No leading "-" in the local part: it would read as an option.)
         echo "Notification email skipped: recipient is not a valid address." >&2
         return 0
     fi

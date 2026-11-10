@@ -97,12 +97,12 @@ rule rank_sulkseq:
     shell:
         """
         python3 workflow/scripts/rank_wells.py \
-            --wells-dir {params.clustered} --sample {params.sample} \
-            --final-fasta {output.final} --collapsed-stats {output.collapsed} \
-            --verdicts {output.verdicts} --funnel {params.funnel} \
-            --topn {params.topn} --min-cluster-reads {params.mincluster} \
-            --min-dominant-reads {params.mindom} \
-            --multiclonal-ratio {params.ratio} > {log} 2>&1
+            --wells-dir {params.clustered:q} --sample {params.sample:q} \
+            --final-fasta {output.final:q} --collapsed-stats {output.collapsed:q} \
+            --verdicts {output.verdicts:q} --funnel {params.funnel:q} \
+            --topn {params.topn:q} --min-cluster-reads {params.mincluster:q} \
+            --min-dominant-reads {params.mindom:q} \
+            --multiclonal-ratio {params.ratio:q} > {log:q} 2>&1
         """
 
 
@@ -131,14 +131,16 @@ rule annotate_sulkseq:
         data=IGBLAST_DATA[0] if IGBLAST_DATA else "",
     log:
         "logs/{}.sulk_annotate.log".format(_SAMPLE),
+    # '' in front of a :q keeps an empty value as an (empty) argument. :q alone drops it, and
+    # run_igblast.sh reads these by position, so every later argument would move up one place.
     shell:
         """
-        mkdir -p {params.outdir}
-        IGBLAST_DATA='{params.data}' bash workflow/scripts/run_igblast.sh \
-            {input.fasta} {params.outdir} {params.sample} \
-            '{params.species}' '{params.panel}' '' '' '' '{params.aux}' '{params.organism}' \
-            > {log} 2>&1
-        mv {params.outdir}/{params.sample}.igblast.tsv {output.airr}
+        mkdir -p {params.outdir:q}
+        IGBLAST_DATA={params.data:q} bash workflow/scripts/run_igblast.sh \
+            {input.fasta:q} {params.outdir:q} {params.sample:q} \
+            ''{params.species:q} ''{params.panel:q} '' '' '' ''{params.aux:q} ''{params.organism:q} \
+            > {log:q} 2>&1
+        mv {params.outdir:q}/{params.sample:q}.igblast.tsv {output.airr:q}
         """
 
 
@@ -170,15 +172,17 @@ rule clones_sulkseq:
         scope=param("clones", "clone_scope", "sample"),
     log:
         "logs/{}.sulk_clones.log".format(_SAMPLE),
+    # '' in front of :q keeps an empty platemap an empty argument; :q alone would drop it and
+    # --platemap would take the next flag as its value.
     shell:
         """
         python3 workflow/scripts/sulkseq_clones.py \
-            --airr {input.airr} --sample {params.sample} --outdir {params.outdir} \
-            --platemap '{params.platemap}' \
-            --max-distance {params.maxdist} --min-reads {params.minreads} \
-            --min-wells {params.minwells} --gene-grouping {params.grouping} \
-            --clone-scope {params.scope} \
-            {params.productive} > {log} 2>&1
+            --airr {input.airr:q} --sample {params.sample:q} --outdir {params.outdir:q} \
+            --platemap ''{params.platemap:q} \
+            --max-distance {params.maxdist:q} --min-reads {params.minreads:q} \
+            --min-wells {params.minwells:q} --gene-grouping {params.grouping:q} \
+            --clone-scope {params.scope:q} \
+            {params.productive:q} > {log:q} 2>&1
         """
 
 
@@ -191,5 +195,5 @@ rule emit_sulkseq:
         marker="{}/split1/{}".format(_RUNDIR, _SAMPLE),
     shell:
         """
-        touch {output.marker}
+        touch {output.marker:q}
         """

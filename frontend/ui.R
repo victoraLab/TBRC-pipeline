@@ -215,6 +215,66 @@ shinyUI(fluidPage(theme = shinytheme("flatly"),
       background-color: var(--sage-200);
     }
 
+    /* Run Progress: a stage that has started and is not finished shows that it is working.
+       The script just after this style block marks it with the class stage-running. Rules
+       that read the bar's inline width were tried first and left the stripes stuck in
+       Safari, which does not re-check them when a script changes the width. Workflow waits
+       at 20%, a strip 45 pixels wide in a panel at 70% opacity, so moving stripes alone
+       cannot be seen: the stage also gets a light across its whole track, a spinner in
+       place of the red cross, and the panel at full strength. */
+    @keyframes stage-stripes {
+      from { background-position: 40px 0; }
+      to { background-position: 0 0; }
+    }
+
+    @keyframes stage-sweep {
+      from { left: -30%; }
+      to { left: 100%; }
+    }
+
+    @keyframes stage-spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .sps-pg-panel .control-panel.stage-running {
+      opacity: 1;
+    }
+
+    .sps-pg-panel .timeline > li.stage-running > i.fa {
+      background-color: var(--sage-700) !important;
+      color: #fff;
+    }
+
+    .sps-pg-panel .timeline > li.stage-running > i.fa::before {
+      content: '\\f110';
+      display: inline-block;
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .sps-pg-panel .progress-bar.stage-running {
+        animation: stage-stripes 2s linear infinite;
+      }
+
+      .sps-pg-panel .progress.stage-running {
+        position: relative;
+      }
+
+      .sps-pg-panel .progress.stage-running::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: -30%;
+        width: 30%;
+        background: linear-gradient(90deg, transparent, var(--sage-700), transparent);
+        animation: stage-sweep 1.5s ease-in-out infinite;
+      }
+
+      .sps-pg-panel .timeline > li.stage-running > i.fa::before {
+        animation: stage-spin 1.2s linear infinite;
+      }
+    }
+
     .irs-bar,
     .irs-bar-edge,
     .irs-single {
@@ -278,6 +338,29 @@ shinyUI(fluidPage(theme = shinytheme("flatly"),
 
     }
   ")),
+  # Marks the Run Progress stage in progress; the rules in the style block above follow the class.
+  tags$script(HTML("
+    document.addEventListener('DOMContentLoaded', function () {
+      var bars = document.querySelectorAll(\".sps-pg-panel .progress-bar[id$='-pg']\");
+      var panel = document.querySelector('.sps-pg-panel .control-panel');
+      function sync() {
+        var any = false;
+        bars.forEach(function (bar) {
+          var w = parseFloat(bar.style.width);
+          var running = w > 0 && w < 100;
+          any = any || running;
+          bar.classList.toggle('stage-running', running);
+          bar.parentElement.classList.toggle('stage-running', running);
+          var step = bar.closest('li');
+          if (step) step.classList.toggle('stage-running', running);
+        });
+        if (panel) panel.classList.toggle('stage-running', any);
+      }
+      var watch = new MutationObserver(sync);
+      bars.forEach(function (bar) { watch.observe(bar, { attributes: true, attributeFilter: ['style'] }); });
+      sync();
+    });
+  ")),
 
   useShinyalert(),
   tags$div(
@@ -309,7 +392,56 @@ shinyUI(fluidPage(theme = shinytheme("flatly"),
         app_radio_buttons("type_input", "Method of input", choices = c("Upload", "Server"), selected = "Server", status = "success", outline = TRUE, animation = "pulse"),
         app_radio_buttons("server_name", "Server to send/get results", choices = c("empty"), status = "success", outline = TRUE, animation = "pulse"),
         textInput("input_folder",  "Folder in server", value = "", placeholder = "plate_001"),
-        fileInput("input_files", "Upload paired FASTQ files (R1 and R2)", accept = c(".fastq.gz", ".fastq", ".gz"), multiple = TRUE)
+        fileInput("input_files", "Upload paired FASTQ files (R1 and R2)", accept = c(".fastq.gz", ".fastq", ".gz"), multiple = TRUE),
+        app_radio_buttons("trim_primers", "Trim primers", choices = c(TRUE, FALSE), selected = TRUE, status = "success", outline = TRUE, animation = "pulse"),
+        textInput("trim_sequence", "Trim sequence", value = "GGGAATTCGAGGTGCAGCTGCAGGAGTCTGG"),
+        tags$div(
+          class = "card-note",
+          style = "margin-top:-8px;",
+          "Filled in from the barcode set. Change it only for a library that uses a different 5' handle."
+        ),
+        tags$div(class = "card-note", "The 5' handle that sits between the plate barcode and the V region. The default is the B-cell handle (EcoRI site + IgH FR1 consensus) and matches barcode sets B, B2 and B cell TA. A T-cell library uses a different handle: leaving this default with barcode set T discards the whole library, because trimming keeps only reads where this sequence is found."),
+        app_radio_buttons(
+          "method",
+          "Core assembly pipeline",
+          choices = METHOD_CHOICES,
+          selected = "tiago_vsearch",
+          status = "success",
+          outline = TRUE,
+          animation = "pulse"
+        ),
+        tags$div(
+          class = "card-note",
+          style = "margin-top:-6px;",
+          paste(
+            "tiago_vsearch is the default. Benchmarked on seven datasets it removes",
+            "the Illumina adapter contamination that made up 24-32% of heavy-chain",
+            "and 3-19% of TCR records, and gives each delivered sequence 2-12x more",
+            "read support. It reports fewer wells, but 97% of the ones it drops held",
+            "a single read. IgBlast puts 12-15 more percentage points of heavy-chain",
+            "sequences in-frame and productive, and 18 more for light chain.",
+            "Choose tiago_nanopore for Oxford Nanopore runs: one FASTQ instead of",
+            "a read pair, wells resolved by plate cassette and FR1 anchor, and one",
+            "consensus per well. It is not an option for Illumina data."
+          )
+        ),
+        # Light-chain rescue is a barcode-splitting mode read by genfasta.smk
+        # and illumina_core.smk. No nanopore rule reads METH, and a wrong answer
+        # there is silent rather than a failed run, so the question is withdrawn
+        # instead of being left to be answered wrongly.
+        conditionalPanel(
+          condition = "input.method != 'tiago_nanopore'",
+          app_radio_buttons(
+            "luka_light",
+            "Barcode preprocessing mode",
+            choices = LUKA_LIGHT_CHOICES,
+            selected = "standard",
+            status = "success",
+            outline = TRUE,
+            animation = "pulse"
+          ),
+          tags$div(class = "card-note", "Light-chain rescue removes the 5' handle, the gene-specific forward-primer bases and the reverse-primer tail during barcode splitting, so the primer trim above is not applied a second time at the end of the run.")
+        )
       ),
       tags$div(
         class = "panel-card",
@@ -332,10 +464,7 @@ shinyUI(fluidPage(theme = shinytheme("flatly"),
         app_radio_buttons(
           "archive_scope",
           "Results archive contents",
-          choices = c(
-            "Light (recommended)" = "light",
-            "Full" = "full"
-          ),
+          choices = ARCHIVE_SCOPE_CHOICES,
           selected = "light",
           status = "success",
           outline = TRUE,
@@ -344,7 +473,6 @@ shinyUI(fluidPage(theme = shinytheme("flatly"),
         tags$div(class = "card-note", "Light ships the imgt.ready FASTA, the untrimmed assembled FASTA, every QC/IGBlast/clonality table and the multi-page QC PDFs. Full adds one PNG per plate."),
         textInput("run_group", "Results subfolder on the storage server (optional)", value = ""),
         tags$div(class = "card-note", "Give several runs of one plate the same name here (for example RUN15) and their archives land together in results/<user>/<name>/ instead of side by side in results/<user>/."),
-        app_radio_buttons("trim_primers", "Trim primers", choices = c(TRUE, FALSE), selected = TRUE, status = "success", outline = TRUE, animation = "pulse"),
         uiOutput("run_local_control"),
         # On by default. Annotation is why most people submit a run, and leaving
         # it off was the path of least resistance: 12 of the 30 runs still on
@@ -365,10 +493,7 @@ shinyUI(fluidPage(theme = shinytheme("flatly"),
         app_radio_buttons(
           "archive_format",
           "Final results archive format",
-          choices = c(
-            "ZIP (Recommended)" = "zip",
-            "tar.gz" = "tar.gz"
-          ),
+          choices = ARCHIVE_FORMAT_CHOICES,
           selected = "zip",
           status = "success",
           outline = TRUE,
@@ -377,10 +502,7 @@ shinyUI(fluidPage(theme = shinytheme("flatly"),
         app_radio_buttons(
           "igblast_species",
           "IGBlast species",
-          choices = c(
-            "Human" = "human",
-            "Mouse" = "mouse"
-          ),
+          choices = IGBLAST_SPECIES_CHOICES,
           selected = "mouse",
           status = "success",
           outline = TRUE,
@@ -397,11 +519,7 @@ shinyUI(fluidPage(theme = shinytheme("flatly"),
         app_radio_buttons(
           "receptor_check",
           "If the sequences disagree with that scope",
-          choices = c(
-            "Correct it, and say so in the report" = "auto",
-            "Report it, but annotate as chosen" = "warn",
-            "Do not check" = "off"
-          ),
+          choices = RECEPTOR_CHECK_CHOICES,
           selected = "auto",
           status = "success",
           outline = TRUE,
@@ -417,45 +535,9 @@ shinyUI(fluidPage(theme = shinytheme("flatly"),
             "empty table and a clonality run that finds no clones, and both report success."
           )
         ),
-        textInput("trim_sequence", "Trim sequence", value = "GGGAATTCGAGGTGCAGCTGCAGGAGTCTGG"),
-        tags$div(
-          class = "card-note",
-          style = "margin-top:-8px;",
-          "Filled in from the barcode set. Change it only for a library that uses a different 5' handle."
-        ),
-        tags$div(class = "card-note", "The 5' handle that sits between the plate barcode and the V region. The default is the B-cell handle (EcoRI site + IgH FR1 consensus) and matches barcode sets B, B2, B cell TA, LukaP and Carla_Barcodes. A T-cell library uses a different handle: leaving this default with barcode set T discards the whole library, because trimming keeps only reads where this sequence is found."),
         sliderInput("n_read", "Contigs or isoforms to retrieve", min = 1, max = 500, step = 1, value = 3),
         tags$div(class = "card-note", style = "margin-top:-8px;",
                  textOutput("nReadHint", inline = TRUE)),
-        app_radio_buttons(
-          "method",
-          "Core assembly pipeline",
-          choices = c(
-            "vsearch cluster assembly (tiago_vsearch)" = "tiago_vsearch",
-            "Classic clonality assembly (classic_luka)" = "classic_luka",
-            "Nanopore long-read assembly (tiago_nanopore)" = "tiago_nanopore",
-            "MIBS / sulkseq multiwell incidence (tiago_sulkseq)" = "tiago_sulkseq"
-          ),
-          selected = "tiago_vsearch",
-          status = "success",
-          outline = TRUE,
-          animation = "pulse"
-        ),
-        tags$div(
-          class = "card-note",
-          style = "margin-top:-6px;",
-          paste(
-            "tiago_vsearch is the default. Benchmarked on seven datasets it removes",
-            "the Illumina adapter contamination that made up 24-32% of heavy-chain",
-            "and 3-19% of TCR records, and gives each delivered sequence 2-12x more",
-            "read support. It reports fewer wells, but 97% of the ones it drops held",
-            "a single read. IgBlast puts 12-15 more percentage points of heavy-chain",
-            "sequences in-frame and productive, and 18 more for light chain.",
-            "Choose tiago_nanopore for Oxford Nanopore runs: one FASTQ instead of",
-            "a read pair, wells resolved by plate cassette and FR1 anchor, and one",
-            "consensus per well. It is not an option for Illumina data."
-          )
-        ),
         # MIBS clone calling, exposed only for the pipeline that reads it. These
         # numbers decide what counts as a clone and how many wells it has to
         # reach, which for an incidence assay is the experiment rather than the
@@ -534,10 +616,7 @@ shinyUI(fluidPage(theme = shinytheme("flatly"),
           app_radio_buttons(
             "mibs_gene_grouping",
             "How gene calls decide clone membership",
-            choices = c(
-              "Strict (a shared gene call is required)" = "strict",
-              "Transitive (a chain of ambiguous calls may link)" = "transitive"
-            ),
+            choices = MIBS_GENE_GROUPING_CHOICES,
             selected = "strict",
             status = "success",
             outline = TRUE,
@@ -554,10 +633,7 @@ shinyUI(fluidPage(theme = shinytheme("flatly"),
           app_radio_buttons(
             "mibs_clone_scope",
             "Where clones are assigned",
-            choices = c(
-              "Within each sample" = "sample",
-              "Across the whole run, then attributed to a sample (as published)" = "global"
-            ),
+            choices = MIBS_CLONE_SCOPE_CHOICES,
             selected = "sample",
             status = "success",
             outline = TRUE,
@@ -588,26 +664,6 @@ shinyUI(fluidPage(theme = shinytheme("flatly"),
               "an out-of-frame junction means what it says."
             )
           )
-        ),
-        # Light-chain rescue is a barcode-splitting mode read by genfasta.smk
-        # and illumina_core.smk. No nanopore rule reads METH, and a wrong answer
-        # there is silent rather than a failed run, so the question is withdrawn
-        # instead of being left to be answered wrongly.
-        conditionalPanel(
-          condition = "input.method != 'tiago_nanopore'",
-          app_radio_buttons(
-            "luka_light",
-            "Barcode preprocessing mode",
-            choices = c(
-              "Standard preprocessing" = "standard",
-              "Light-chain rescue preprocessing" = "luka_light"
-            ),
-            selected = "standard",
-            status = "success",
-            outline = TRUE,
-            animation = "pulse"
-          ),
-          tags$div(class = "card-note", "Light-chain rescue removes the 5' handle, the gene-specific forward-primer bases and the reverse-primer tail during barcode splitting, so the primer trim above is not applied a second time at the end of the run.")
         ),
         # Rendered server-side so the button can state its own readiness. See
         # output$run_control: when something is missing it is replaced by a

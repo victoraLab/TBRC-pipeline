@@ -1,0 +1,11 @@
+# Placeholder. Docker cannot create a mountpoint inside a read-only mount, so this folder
+# must exist even when no SSH is used. To submit to a cluster or read a storage server,
+# point TBRC_SSH_DIR (in .env) at a folder holding a dedicated key and a config like:
+#
+# Host cluster-login
+#     HostName login.cluster.example.org
+#     User your_user
+#     IdentityFile /root/.ssh/id_tbrc
+#     ControlMaster no
+#     UserKnownHostsFile /tmp/known_hosts
+#     StrictHostKeyChecking accept-new

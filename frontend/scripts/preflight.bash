@@ -69,18 +69,31 @@ REMOTE_PATH="${BASE%/}/${INPUT_FOLDER}"
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10)
 [[ -n "${SSH_PORT}" && "${SSH_PORT}" != "null" ]] && SSH_OPTS+=(-p "${SSH_PORT}")
 
-# ---------------------------------------------------------------- reachability
+# ------------------------------------------------------------------ remote calls
+# The five calls this script makes, each in a function so that both ways of making one sit
+# side by side. With the cluster gate on (cluster.use_gate) each is a named action asked of
+# the data-transfer node, which runs the same check against the storage server itself: this
+# host never names the storage server. Without it they are composed here and sent straight
+# to the storage server (the results folder to the data-transfer node), as before. A call
+# that fails, or that the gate refuses, fails its function either way.
+GATE_HOST=""
+gate_enabled && GATE_HOST="$(json_get_cluster_field dtn_host 2>/dev/null)"
+GATE_CONNECT_TIMEOUT=10
 
-if ! ssh -n "${SSH_OPTS[@]}" "${HOST}" true >/dev/null 2>&1; then
-  emit FAIL server_unreachable "Cannot reach the storage server ${HOST}." \
-       "It may be off, or you may be off the network. Nothing is wrong with your run settings."
-  exit 0
-fi
+remote_reachable() {
+  if gate_enabled; then
+    gate_call "${GATE_HOST}" nas-reachable "${STORAGE_SERVER_NAME}"
+  else
+    ssh -n "${SSH_OPTS[@]}" "${HOST}" true
+  fi
+}
 
-# ------------------------------------------------------- the folder and its files
-# One remote call gathers everything: a round trip per check would be slow enough
-# that people stop using the button.
-PROBE=$(ssh -n "${SSH_OPTS[@]}" "${HOST}" "
+# The folder's listing, one line per fact (MISSING, or EXISTS, ALL:, FQ:, EMPTY:, BYTES:, F:, O:).
+remote_probe() {
+  if gate_enabled; then
+    gate_call "${GATE_HOST}" nas-probe "${STORAGE_SERVER_NAME}" "${INPUT_FOLDER}"
+  else
+    ssh -n "${SSH_OPTS[@]}" "${HOST}" "
   p=$(shq "${REMOTE_PATH}")
   if [ ! -d \"\$p\" ]; then echo 'MISSING'; exit 0; fi
   echo 'EXISTS'
@@ -90,7 +103,82 @@ PROBE=$(ssh -n "${SSH_OPTS[@]}" "${HOST}" "
   echo \"BYTES:\$(du -sb \"\$p\" 2>/dev/null | cut -f1)\"
   find \"\$p\" -maxdepth 1 -type f \\( -name '*.fastq*' -o -name '*.fq*' \\) -printf 'F:%f:%s\n' 2>/dev/null | head -20
   find \"\$p\" -maxdepth 1 -type f ! -name '*.fastq*' ! -name '*.fq*' ! -name '.*' -printf 'O:%f\n' 2>/dev/null | head -6
-" 2>/dev/null)
+"
+  fi
+}
+
+# BAD <file>, then OK <n> and SKIPPED <n>, for the gzip test under a time budget.
+remote_integrity() {
+  if gate_enabled; then
+    gate_call "${GATE_HOST}" nas-integrity "${STORAGE_SERVER_NAME}" "${INPUT_FOLDER}" "${INTEGRITY_BUDGET}" "${INTEGRITY_PER_FILE}"
+  else
+    ssh -n "${SSH_OPTS[@]}" "${HOST}" "
+  cd $(shq "${REMOTE_PATH}") 2>/dev/null || exit 0
+  have_timeout=0; command -v timeout >/dev/null 2>&1 && have_timeout=1
+  deadline=\$(( \$(date +%s) + ${INTEGRITY_BUDGET} ))
+  ok=0; skipped=0
+  for f in *.gz; do
+    [ -e \"\$f\" ] || continue
+    # The overall budget stops us starting another file; the per-file timeout
+    # stops one huge file consuming the whole budget by itself. A 10 GB FASTQ
+    # takes minutes to decompress, so without the second bound the first bound
+    # never gets a chance to apply.
+    if [ \$(date +%s) -ge \$deadline ]; then skipped=\$(( skipped + 1 )); continue; fi
+    if [ \$have_timeout -eq 1 ]; then
+      timeout ${INTEGRITY_PER_FILE} gzip -t -- \"\$f\" 2>/dev/null
+      rc=\$?
+    else
+      gzip -t -- \"\$f\" 2>/dev/null; rc=\$?
+    fi
+    if [ \$rc -eq 0 ]; then ok=\$(( ok + 1 ))
+    elif [ \$rc -eq 124 ]; then skipped=\$(( skipped + 1 ))
+    else echo \"BAD \$f\"
+    fi
+  done
+  echo \"OK \$ok\"; echo \"SKIPPED \$skipped\"
+"
+  fi
+}
+
+# Whether results/<user>/<folder>/<run> exists on the cluster (the path is the one this
+# check has always asked about). Exit status 0 when it does.
+remote_results_exist() {
+  if gate_enabled; then
+    gate_call "${GATE_HOST}" results-exists "${USER_ID}" "${INPUT_FOLDER}" "${RUN_NAME}"
+  else
+    ssh -n -o BatchMode=yes -o ConnectTimeout=10 "${DTN}" \
+        "test -d $(shq "${RES_ROOT}/results/${USER_ID}/${INPUT_FOLDER}/${RUN_NAME}")"
+  fi
+}
+
+# How many of the first 20,000 reads of a FASTQ hold the first 12 bases of the trim sequence.
+# The gate picks the FASTQ itself (the first one, as the probe lists them); the file named
+# here is for the composed command. Usage: remote_trim_hits FASTQ_NAME SEQ12
+remote_trim_hits() {
+  local fastq="$1" seq12="$2"
+  if gate_enabled; then
+    gate_call "${GATE_HOST}" nas-trim-hits "${STORAGE_SERVER_NAME}" "${INPUT_FOLDER}" "${seq12}"
+  else
+    ssh -n "${SSH_OPTS[@]}" "${HOST}" "
+      f=$(shq "${REMOTE_PATH}/${fastq}")
+      case \"\$f\" in *.gz) zcat -- \"\$f\" 2>/dev/null;; *) cat -- \"\$f\" 2>/dev/null;; esac \
+        | head -80000 | awk 'NR%4==2' | grep -c -- $(shq "${seq12}") || true
+    "
+  fi
+}
+
+# ---------------------------------------------------------------- reachability
+
+if ! remote_reachable >/dev/null 2>&1; then
+  emit FAIL server_unreachable "Cannot reach the storage server ${HOST}." \
+       "It may be off, or you may be off the network. Nothing is wrong with your run settings."
+  exit 0
+fi
+
+# ------------------------------------------------------- the folder and its files
+# One remote call gathers everything: a round trip per check would be slow enough
+# that people stop using the button.
+PROBE=$(remote_probe 2>/dev/null)
 
 if [[ -z "${PROBE}" ]] || grep -q '^MISSING$' <<<"${PROBE}"; then
   emit FAIL folder_missing "No folder called '${INPUT_FOLDER}' on ${STORAGE_SERVER_NAME}." \
@@ -158,31 +246,7 @@ fi
 # threaded it froze the app for every connected user, not just the submitter.
 INTEGRITY_BUDGET="${TBRC_PREFLIGHT_GZIP_SECONDS:-20}"
 INTEGRITY_PER_FILE="${TBRC_PREFLIGHT_GZIP_FILE_SECONDS:-8}"
-INTEGRITY_OUT=$(ssh -n "${SSH_OPTS[@]}" "${HOST}" "
-  cd $(shq "${REMOTE_PATH}") 2>/dev/null || exit 0
-  have_timeout=0; command -v timeout >/dev/null 2>&1 && have_timeout=1
-  deadline=\$(( \$(date +%s) + ${INTEGRITY_BUDGET} ))
-  ok=0; skipped=0
-  for f in *.gz; do
-    [ -e \"\$f\" ] || continue
-    # The overall budget stops us starting another file; the per-file timeout
-    # stops one huge file consuming the whole budget by itself. A 10 GB FASTQ
-    # takes minutes to decompress, so without the second bound the first bound
-    # never gets a chance to apply.
-    if [ \$(date +%s) -ge \$deadline ]; then skipped=\$(( skipped + 1 )); continue; fi
-    if [ \$have_timeout -eq 1 ]; then
-      timeout ${INTEGRITY_PER_FILE} gzip -t -- \"\$f\" 2>/dev/null
-      rc=\$?
-    else
-      gzip -t -- \"\$f\" 2>/dev/null; rc=\$?
-    fi
-    if [ \$rc -eq 0 ]; then ok=\$(( ok + 1 ))
-    elif [ \$rc -eq 124 ]; then skipped=\$(( skipped + 1 ))
-    else echo \"BAD \$f\"
-    fi
-  done
-  echo \"OK \$ok\"; echo \"SKIPPED \$skipped\"
-" 2>/dev/null)
+INTEGRITY_OUT=$(remote_integrity 2>/dev/null)
 
 BAD=$(printf '%s\n' "${INTEGRITY_OUT}" | sed -n 's/^BAD //p' | head -5)
 VERIFIED=$(printf '%s\n' "${INTEGRITY_OUT}" | sed -n 's/^OK //p' | tail -1)
@@ -208,8 +272,7 @@ if [[ -n "${RUN_NAME}" && -n "${USER_ID}" ]]; then
   RES_ROOT="$(json_get_cluster_field pipeline_root 2>/dev/null)"
   DTN="$(json_get_cluster_field dtn_host 2>/dev/null)"
   if [[ -n "${RES_ROOT}" && -n "${DTN}" ]]; then
-    if ssh -n -o BatchMode=yes -o ConnectTimeout=10 "${DTN}" \
-        "test -d $(shq "${RES_ROOT}/results/${USER_ID}/${INPUT_FOLDER}/${RUN_NAME}")" 2>/dev/null; then
+    if remote_results_exist 2>/dev/null; then
       emit WARN overwrite "A run called '${RUN_NAME}' already exists for ${USER_ID}/${INPUT_FOLDER}." \
            "Submitting again will replace those results. Use a different run name to keep both."
     fi
@@ -226,11 +289,7 @@ if [[ -n "${TRIM_SEQ}" && "${#TRIM_SEQ}" -ge 12 ]]; then
   PROBE_SEQ="${TRIM_SEQ:0:12}"
   ONE=$(grep -m1 -oP '(?<=^F:)[^:]+' <<<"${PROBE}")
   if [[ -n "${ONE}" ]]; then
-    HITS=$(ssh -n "${SSH_OPTS[@]}" "${HOST}" "
-      f=$(shq "${REMOTE_PATH}/${ONE}")
-      case \"\$f\" in *.gz) zcat -- \"\$f\" 2>/dev/null;; *) cat -- \"\$f\" 2>/dev/null;; esac \
-        | head -80000 | awk 'NR%4==2' | grep -c -- $(shq "${PROBE_SEQ}") || true
-    " 2>/dev/null | tr -d '[:space:]')
+    HITS=$(remote_trim_hits "${ONE}" "${PROBE_SEQ}" 2>/dev/null | tr -d '[:space:]')
     HITS=${HITS:-0}
     if [[ "${HITS}" -eq 0 ]]; then
       emit FAIL trim_mismatch "The trim sequence does not appear in the reads at all (checked 20,000 reads)." \

@@ -85,10 +85,42 @@ if [[ "${TBRC_EXECUTOR:-cluster}" == "local" ]]; then
         --rerun-incomplete \
         "$@"
 else
+    # The SLURM account to charge is __default__.account in config/cluster.json. Empty or absent
+    # means none: a cluster whose partitions need no account gets no --account, and sbatch uses the
+    # user's default. This lab's file names its account, so its sbatch line is what it always was.
+    # Until November 2026 the account was written into the line below.
+    #
+    # Snakemake runs the --cluster string through a shell, so the value must not reach it as it
+    # stands. A real account name is letters, digits, dot, underscore and hyphen, so anything else
+    # stops the run here, naming the field and not the value; the name is quoted as well, which does
+    # nothing to a valid one. A file that cannot be read stops the run too: carrying on would drop
+    # the account silently and the first sbatch would be refused far from the cause.
+    if ! CLUSTER_ACCOUNT="$(python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        value = json.load(handle)["__default__"].get("account")
+except (OSError, ValueError, KeyError, TypeError, AttributeError) as err:
+    sys.exit("cannot read __default__ from %s: %s" % (sys.argv[1], err))
+if value is not None and not isinstance(value, str):
+    sys.exit("__default__.account in %s must be a string" % sys.argv[1])
+sys.stdout.write(value or "")
+' config/cluster.json)"; then
+        echo "snakemake.sh: config/cluster.json must be a JSON file with a __default__ section (see above)." >&2
+        exit 1
+    fi
+    SBATCH_ACCOUNT=""
+    if [[ -n "${CLUSTER_ACCOUNT}" ]]; then
+        if [[ ! "${CLUSTER_ACCOUNT}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
+            echo "snakemake.sh: __default__.account in config/cluster.json must be a SLURM account name: letters, digits, dot, underscore and hyphen only, not starting with a hyphen." >&2
+            exit 1
+        fi
+        SBATCH_ACCOUNT="--account $(printf '%q' "${CLUSTER_ACCOUNT}") "
+    fi
     snakemake \
         -j 9999 \
         --rerun-incomplete \
         --cluster-config config/cluster.json \
-        --cluster "sbatch --partition {cluster.partition} --job-name {cluster.name} -o {cluster.output} -e {cluster.error} --ntasks-per-node 1 --time {cluster.time} --mem {cluster.mem} --cpus-per-task {cluster.cpus_per_task}" \
+        --cluster "sbatch ${SBATCH_ACCOUNT}--partition {cluster.partition} --job-name {cluster.name} -o {cluster.output} -e {cluster.error} --ntasks-per-node 1 --time {cluster.time} --mem {cluster.mem} --cpus-per-task {cluster.cpus_per_task}" \
         "$@"
 fi

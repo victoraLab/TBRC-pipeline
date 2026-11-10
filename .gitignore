@@ -31,6 +31,7 @@ frontend/notification_log.tsv
 frontend/errorlogs/
 backend/data/runs/
 backend/results/
+backend/.parallel/
 backend/logs/
 backend/slurm_outs/
 test results/
@@ -58,6 +59,13 @@ backend/igblast/refs/*.gl.aux
 # Private local deployment config
 scripts/deploy_config.sh
 
+
+# The web app's login, written by ./tbrc setup: deploy/docker/env.example is the template that ships.
+# setup also leaves dated copies of the files it replaces (.env.bak-<date-time>, ...).
+deploy/docker/.env
+deploy/docker/.env.*
+frontend/server_config.json.bak-*
+backend/config/cluster.json.bak-*
 
 # site-specific settings: copy the *.example file and edit
 frontend/server_config.json

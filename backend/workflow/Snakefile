@@ -1,6 +1,7 @@
 import pandas as pd
 import os
 import re
+import sys
 import glob
 import json
 
@@ -125,6 +126,20 @@ def load_samples_table(path):
 
 samples_df = load_samples_table('{}'.format(DATA_TABLE))
 
+# sample.json is written by the web container, which may have been hijacked, so every row is
+# checked before anything else reads it. A bad value stops the run here, before any job starts.
+# config/trusted_servers.json (relative to the working directory, like the rest of config/) lists
+# the destinations and programs this installation trusts; without it only the formats are checked.
+sys.path.insert(0, workflow.basedir)
+from sample_rules import load_trusted, validate_run_folder, validate_sample, validate_sample_name
+
+_trusted = load_trusted("config/trusted_servers.json")
+for _row in samples_df.to_dict("records"):
+    validate_sample(_row, _trusted)
+# A table in data/runs/<user>/<run>/ may only describe that run: dest drives the cleanup in
+# final.script.sh. A table anywhere else (a test fixture, a run outside data/runs) is not touched.
+validate_run_folder(samples_df.to_dict("records"), DATA_TABLE)
+
 # The frontend now publishes the sample name it already derived. Prefer it, and
 # only fall back to re-deriving from filenames for sample.json files written
 # before that field existed.
@@ -138,6 +153,8 @@ def resolve_sample_name(df, read1_path, read2_path):
     return sample_name_from_reads(read1_path, read2_path)
 
 SAMPLE = resolve_sample_name(samples_df, READ1_GZ, READ2_GZ)
+# Without a sample_name field the name comes from the FASTQ file names, not from the checked row.
+validate_sample_name(SAMPLE)
 
 
 # A sample.json copied from an earlier run keeps that run's sample_name, and the

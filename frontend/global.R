@@ -107,12 +107,15 @@ validate_barcode_file <- function(path, label = "Barcode file") {
 # as empty. Without this, every readiness check would need its own is.null guard.
 `%||%` <- function(a, b) if (is.null(a)) b else a
 
+# The local part may not start with "-": an address that did would read as an option if it were
+# ever put on a mail program's command line. Same rule as _EMAIL in backend/workflow/sample_rules.py
+# and the check in backend/workflow/scripts/final.script.sh; tests/validation_cases.json holds the cases.
 is_valid_email <- function(x) {
   if (is.null(x)) return(TRUE)
   x <- trimws(as.character(x))
   if (!length(x) || is.na(x[1]) || !nzchar(x[1])) return(TRUE)
   length(x) == 1 && nchar(x) <= 254 &&
-    grepl("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$", x)
+    grepl("^[A-Za-z0-9._%+][A-Za-z0-9._%+-]*@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$", x)
 }
 
 is_valid_fastq_filename <- function(x) {
@@ -138,14 +141,51 @@ APP_DIR <- normalizePath(
 )
 SERVER_CONFIG_FILE <- file.path(APP_DIR, SERVER_CONFIG_FILE)
 
-# Code and state are separate concerns. In a container the app directory is
-# mounted read-only and these three writable locations are volumes, so allow each
-# to be relocated. Unset, they sit inside the app directory exactly as before.
+# The submission check and the one place a script is launched from the form.
+# Sourced here so that ui.R, which is evaluated after this file, can use the
+# choice constants, and so that tests can replace run_script().
+source(file.path(APP_DIR, "validate_input.R"), local = FALSE)
+source(file.path(APP_DIR, "run_script.R"), local = FALSE)
+
+# The two files the Barcode Library previews. Illumina sets hold BC1.txt and
+# BC2.txt; nanopore sets hold plate barcodes and well-barcode-plus-FR1 anchors.
+barcode_preview_files <- function(folder_path) {
+  layouts <- list(
+    list(files = c("BC1.txt", "BC2.txt"), labels = c("Barcode 1:", "Barcode 2:")),
+    list(files = c("plate_barcodes.tsv", "BCFR1_anchors.tsv"),
+         labels = c("Plate barcodes:", "Well barcode + FR1 anchors:"))
+  )
+  for (layout in layouts) {
+    paths <- file.path(folder_path, layout$files)
+    if (all(file.exists(paths))) return(list(paths = paths, labels = layout$labels))
+  }
+  NULL
+}
+
+# Code and state are separate concerns. In a container the app directory is read-only
+# to the app (baked into the image, or mounted read-only), and these three writable
+# locations are volumes, so allow each to be relocated. Unset, they sit inside the app directory
+# exactly as before.
+#
+# A folder the app cannot write to stops the start here, loudly. Otherwise every
+# later write (the barcode list, the run ledger, uploads) fails without a word:
+# a volume created while the app ran as root stays root-owned and the user the
+# container runs as cannot touch it.
 app_state_dir <- function(env_name, default_subdir) {
   configured <- Sys.getenv(env_name, unset = "")
   path <- if (nzchar(configured)) configured else file.path(APP_DIR, default_subdir)
   if (!dir.exists(path)) {
     dir.create(path, recursive = TRUE, showWarnings = FALSE)
+  }
+  if (!dir.exists(path) || file.access(path, 2) != 0) {
+    stop(sprintf(
+      paste0("The folder %s (%s) is not writable by user %s, so the app cannot start. ",
+             "Give the user running the app write access to that folder, or point %s at a writable one. ",
+             "For example, a Docker volume created while the app still ran as root is owned by root: ",
+             "with TBRC stopped, hand it over once with ",
+             "`docker run --rm -v <volume>:/v <image> chown -R <uid>:<uid> /v`, ",
+             "where <uid> is the id the app runs as."),
+      path, env_name, Sys.info()[["effective_user"]], env_name), call. = FALSE)
   }
   normalizePath(path, winslash = "/", mustWork = FALSE)
 }
@@ -208,6 +248,32 @@ poll_background_runs <- function() {
   schedule_background_poll()
 }
 
+# What happens when a run ends, in this order: write the run to the history,
+# send the emails, update the page. The first two are bookkeeping; the page is
+# what the submitter is looking at. A failure in either of them is logged and
+# the next step still runs, because a run that succeeded must not look
+# unfinished (a staging run left Workflow and Export stuck at their old values
+# after the history step threw). When the email step fails, update_page() gets an
+# email_result of the shape it reads, with a non-zero status for both mails.
+complete_run <- function(record_history, send_notifications, update_page) {
+  tryCatch(record_history(), error = function(e)
+    message(sprintf("TBRC: recording the run in the history failed: %s", conditionMessage(e))))
+
+  failed_mail <- function(reason) {
+    list(user = list(status = 1, message = reason), admin = list(status = 1, message = reason))
+  }
+  email_result <- tryCatch(send_notifications(), error = function(e) {
+    message(sprintf("TBRC: sending the completion email failed: %s", conditionMessage(e)))
+    failed_mail(conditionMessage(e))
+  })
+  if (!is.list(email_result) || is.null(email_result$user$status) || is.null(email_result$admin$status)) {
+    message("TBRC: the completion email step returned no status for the user and the admin.")
+    email_result <- failed_mail("No status was returned by the email step.")
+  }
+
+  update_page(email_result)
+}
+
 format_duration_compact <- function(total_seconds) {
   total_seconds <- as.numeric(total_seconds)
   if (is.na(total_seconds) || total_seconds < 0) {
@@ -252,6 +318,15 @@ append_run_stat <- function(run_stat) {
       error = function(...) NULL
     )
     if (!is.null(existing) && !identical(names(existing), names(run_stat))) {
+      # A header and no rows (a ledger that was emptied, or created and never
+      # filled): there is nothing to carry over, and padding a zero-row frame
+      # with a column fails ("replacement has 1 row, data has 0"). Start the
+      # file again with the new columns and the one row.
+      if (nrow(existing) == 0) {
+        write.table(run_stat, file = RUN_STATS_FILE, sep = "\t", quote = TRUE,
+                    row.names = FALSE, col.names = TRUE, append = FALSE)
+        return(invisible(NULL))
+      }
       for (column in setdiff(names(run_stat), names(existing))) existing[[column]] <- ""
       for (column in setdiff(names(existing), names(run_stat))) run_stat[[column]] <- ""
       merged <- rbind(existing[, names(run_stat), drop = FALSE],
@@ -647,19 +722,35 @@ get_cluster_value_or <- function(config, field_name, fallback) {
 # User name, folder name and barcode folder name all become path segments on up
 # to three machines and are interpolated into remote shell commands. Keep them to
 # a conservative character set; the shell scripts re-check independently.
-VALID_PATH_SEGMENT <- "^[A-Za-z0-9._-]+$"
+#
+# Matched with perl = TRUE so [A-Za-z] means the ASCII letters whatever the
+# locale. PCRE's $ also matches just before a final newline, so "a\n" would pass
+# a pattern ending in $; \z is the end of the string and nothing else.
+VALID_PATH_SEGMENT <- "^[A-Za-z0-9._-]+\\z"
 
-is_valid_path_segment <- function(value) {
-  if (is.null(value) || length(value) < 1) {
+# A path segment exactly as given: nothing is trimmed, so a value with a stray
+# space or newline is not one.
+is_path_segment_text <- function(value) {
+  if (!is.character(value) || length(value) != 1L || is.na(value)) {
     return(FALSE)
   }
 
-  value <- trimws(as.character(value[[1]]))
-
   nzchar(value) &&
-    grepl(VALID_PATH_SEGMENT, value) &&
+    isTRUE(tryCatch(grepl(VALID_PATH_SEGMENT, value, perl = TRUE),
+                    error = function(e) FALSE, warning = function(w) FALSE)) &&
     !value %in% c(".", "..") &&
     !startsWith(value, "-")
+}
+
+# The form trims what people type (a pasted name often brings a space or a
+# newline) and then applies the rule. Exactly one string: a vector or a list is
+# not a name.
+is_valid_path_segment <- function(value) {
+  if (!is.character(value) || length(value) != 1L || is.na(value)) {
+    return(FALSE)
+  }
+
+  is_path_segment_text(trimws(value))
 }
 
 invalid_segment_message <- function(label) {
@@ -793,10 +884,7 @@ servers_config <- fromJSON(SERVER_CONFIG_FILE, simplifyVector = FALSE)
 # Extract server names
 server_names <- names(servers_config$storage_server)
 
-igblast_species_choices <- c(
-  "Human" = "human",
-  "Mouse" = "mouse"
-)
+igblast_species_choices <- IGBLAST_SPECIES_CHOICES
 
 # ig_light is no longer offered. ig_all carries the same 168 IGKV and 19 IGLV
 # germlines, and a light-only panel on a plate that also holds heavy chains

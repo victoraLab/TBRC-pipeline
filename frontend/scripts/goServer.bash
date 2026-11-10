@@ -78,6 +78,14 @@ if [[ "${LOCAL_RUN}" == "1" ]]; then
   # replaces was the single largest cause of run failures.
   require_local_backend
 
+  # With the cluster gate on, only the cluster reaches a storage server: this host never
+  # names one in an ssh or rsync, and the gate can pull raw data only onto the cluster.
+  if gate_enabled; then
+    echo "Cannot run locally: with the cluster gate on, this host does not reach ${STORAGE_SERVER_NAME} itself." >&2
+    echo "A run on this server pulls its raw data itself. Submit to the HPC cluster instead, or upload the FASTQ pair." >&2
+    exit 1
+  fi
+
   # The same two steps as the cluster branch below, onto this host: pull the raw
   # folder into backend/data/runs/<user>/, then put the app's run folder
   # (sample.json, a MIBS design) beside it. There is no DTN here, so this host
@@ -108,6 +116,57 @@ if [[ "${LOCAL_RUN}" == "1" ]]; then
   exit 0
 fi
 
+# Refuse to start a transfer that cannot finish. Three runs in August 2026 died
+# partway through the pull with a bare "Disk quota exceeded (122)" from rsync,
+# which tells the submitting user nothing they can act on. SOURCE_KB and AVAIL_KB
+# are what the storage server and the cluster reported, empty when a probe failed.
+# Usage: check_cluster_space SOURCE_KB AVAIL_KB WHERE
+check_cluster_space() {
+  local source_kb="$1" avail_kb="$2" where="$3" needed_kb
+  if [[ "${source_kb}" =~ ^[0-9]+$ && "${avail_kb}" =~ ^[0-9]+$ ]]; then
+    # Ask for headroom: the workflow writes trimmed FASTQ, an assembled FASTA and
+    # per-well splits on top of the raw input.
+    needed_kb=$(( source_kb * 3 ))
+    if (( avail_kb < needed_kb )); then
+      echo "Not enough space on the cluster to run ${RUN_NAME}." >&2
+      echo "The run needs about $(( needed_kb / 1024 )) MB of working space but only $(( avail_kb / 1024 )) MB is free at ${where}." >&2
+      echo "Free space under the pipeline results folder, or ask the HPC team to raise the quota, then submit again." >&2
+      exit 1
+    fi
+    echo "Space check: $(( source_kb / 1024 )) MB input, $(( avail_kb / 1024 )) MB free."
+  else
+    echo "Space check skipped: could not read source size or free space." >&2
+  fi
+}
+
+# The cluster branch with the gate on (cluster.use_gate): the steps of the branch below,
+# each a named action asked of the data-transfer node, which reaches the storage server
+# itself, so this host never names one. The run folder goes by rsync to a path relative to
+# the gate's root, in the one shape the gate's receive rule accepts (-a -P, nothing added).
+run_cluster_via_gate() {
+  local source_kb avail_kb input_bytes
+
+  if ! gate_call "${DTN_HOST}" nas-dir "${STORAGE_SERVER_NAME}" "${INPUT_FOLDER}"; then
+    echo "Folder not found on ${STORAGE_SERVER_NAME}: ${INPUT_FOLDER}" >&2
+    exit 1
+  fi
+
+  source_kb="$(gate_call "${DTN_HOST}" nas-size "${STORAGE_SERVER_NAME}" "${INPUT_FOLDER}" 2>/dev/null || echo "")"
+  avail_kb="$(gate_call "${DTN_HOST}" free-space 2>/dev/null || echo "")"
+  check_cluster_space "${source_kb}" "${avail_kb}" "the cluster's pipeline folder"
+
+  gate_call "${DTN_HOST}" pull-raw "${STORAGE_SERVER_NAME}" "${USER_ID}" "${INPUT_FOLDER}"
+  rsync -a -P "${RUNS_DIR}/${USER_ID}/${RUN_NAME}/" "${DTN_HOST}:$(cluster_path "data/runs/${USER_ID}/${RUN_NAME}/")"
+  input_bytes="$(gate_call "${DTN_HOST}" run-bytes "${USER_ID}" "${RUN_NAME}")"
+  echo "TBRC_INPUT_BYTES=${input_bytes:-0}"
+  dispatch_via_gate "${SSH_HOST}" "${USER_ID}" "${RUN_NAME}"
+}
+
+if gate_enabled; then
+  run_cluster_via_gate
+  exit $?
+fi
+
 RSYNC_SSH_OPTION="$(rsync_transport_args "${STORAGE_SERVER_SSH_PORT}")"
 STORAGE_SSH_CHECK=""
 if [[ -n "${STORAGE_SERVER_SSH_PORT}" && "${STORAGE_SERVER_SSH_PORT}" != "null" ]]; then
@@ -116,7 +175,7 @@ fi
 
 # Where this host can reach the storage server itself, validate the folder over a
 # single ssh hop. That is one less shell to quote for, and it answers faster.
-# Epsilon cannot resolve the NAS hostnames at all, so it falls back to proxying
+# A host that cannot resolve the NAS hostnames at all falls back to proxying
 # the check through the data-transfer node.
 if ssh -n -o BatchMode=yes -o ConnectTimeout=8 ${STORAGE_SSH_CHECK} "${REMOTE_STORAGE_HOST}" true >/dev/null 2>&1; then
   STORAGE_DIRECT=1
@@ -141,9 +200,7 @@ else
   fi
 fi
 
-# Refuse to start a transfer that cannot finish. Three runs in August 2026 died
-# partway through the pull with a bare "Disk quota exceeded (122)" from rsync,
-# which tells the submitting user nothing they can act on.
+# The raw folder's size and the room on the cluster (check_cluster_space, above).
 REMOTE_SIZE_COMMAND="du -sk $(shq "${REMOTE_INPUT_PATH}") 2>/dev/null | cut -f1"
 if [[ "${STORAGE_DIRECT}" == "1" ]]; then
   SOURCE_SIZE_KB="$(ssh -n ${STORAGE_SSH_CHECK} "${REMOTE_STORAGE_HOST}" "${REMOTE_SIZE_COMMAND}" 2>/dev/null || echo "")"
@@ -152,20 +209,7 @@ else
 fi
 AVAIL_KB="$(ssh "${DTN_HOST}" "df -Pk $(shq "${PIPELINE_ROOT}") | awk 'NR==2 {print \$4}'" 2>/dev/null || echo "")"
 
-if [[ "${SOURCE_SIZE_KB}" =~ ^[0-9]+$ && "${AVAIL_KB}" =~ ^[0-9]+$ ]]; then
-  # Ask for headroom: the workflow writes trimmed FASTQ, an assembled FASTA and
-  # per-well splits on top of the raw input.
-  NEEDED_KB=$(( SOURCE_SIZE_KB * 3 ))
-  if (( AVAIL_KB < NEEDED_KB )); then
-    echo "Not enough space on the cluster to run ${RUN_NAME}." >&2
-    echo "The run needs about $(( NEEDED_KB / 1024 )) MB of working space but only $(( AVAIL_KB / 1024 )) MB is free at ${PIPELINE_ROOT}." >&2
-    echo "Free space under the pipeline results folder, or ask the HPC team to raise the quota, then submit again." >&2
-    exit 1
-  fi
-  echo "Space check: $(( SOURCE_SIZE_KB / 1024 )) MB input, $(( AVAIL_KB / 1024 )) MB free."
-else
-  echo "Space check skipped: could not read source size or free space." >&2
-fi
+check_cluster_space "${SOURCE_SIZE_KB}" "${AVAIL_KB}" "${PIPELINE_ROOT}"
 
 # Pull the raw run folder onto the DTN first, excluding Synology metadata
 # folders that otherwise confuse FASTQ discovery downstream.
@@ -176,13 +220,13 @@ fi
 REMOTE_PULL_COMMAND="${REMOTE_PULL_COMMAND} $(shq "${RAWDATA_SERVER}${INPUT_FOLDER}") $(shq "${PIPELINE_ROOT}/data/runs/${USER_ID}/")"
 
 ssh "${DTN_HOST}" "${REMOTE_PULL_COMMAND}"
-rsync -a -P "${RUNS_DIR}/${USER_ID}/${RUN_NAME}/" "${DTN_HOST}:${PIPELINE_ROOT}/data/runs/${USER_ID}/${RUN_NAME}/"
+rsync -a -P "${RUNS_DIR}/${USER_ID}/${RUN_NAME}/" "${DTN_HOST}:$(cluster_path "data/runs/${USER_ID}/${RUN_NAME}/")"
 # Emit a lightweight marker that the Shiny app can parse to improve the
 # runtime estimator without opening or recomputing FASTQ sizes itself.
 # Keep the remote size probe POSIX-friendly. The earlier grouped `find (...)`
 # expression was valid bash syntax but could still trip plain `sh` on some
 # hosts once it passed through SSH quoting layers.
-INPUT_BYTES="$(ssh "${DTN_HOST}" "find '${PIPELINE_ROOT}/data/runs/${USER_ID}/${RUN_NAME}' -maxdepth 2 -type f ! -path '*/@eaDir/*' -printf '%f\t%s\n' | awk -F '\t' '\$1 ~ /\\.fastq(\\.gz)?$/ {sum += \$2} END {print sum + 0}'")"
+INPUT_BYTES="$(ssh "${DTN_HOST}" "find $(shq "${PIPELINE_ROOT}/data/runs/${USER_ID}/${RUN_NAME}") -maxdepth 2 -type f ! -path '*/@eaDir/*' -printf '%f\t%s\n' | awk -F '\t' '\$1 ~ /\\.fastq(\\.gz)?$/ {sum += \$2} END {print sum + 0}'")"
 echo "TBRC_INPUT_BYTES=${INPUT_BYTES:-0}"
 dispatch_detached "${SSH_HOST}" "${PIPELINE_ROOT}" "${PATH_PREFIX}" "${SNAKEMAKE_ENV}" \
   "${RUN_KEY}" "${DATA_TABLE}" "${INPUTPATH}"

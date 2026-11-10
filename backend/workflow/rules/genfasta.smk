@@ -15,6 +15,6 @@ rule genfasta:
         error=expand("logs/{sample}.genfasta.err.log", sample=SAMPLE)
     shell:
         """
-        workflow/scripts/split_fasta.sh -f {input.fasta} -1 {input.barcode1} -2 {input.barcode2} -o {output} -d '{params.destiny}' -m '{params.meth}' -h '{params.head}' -t '{params.trimming_seq}' > {log.std} 2> {log.error} 
+        workflow/scripts/split_fasta.sh -f {input.fasta:q} -1 {input.barcode1:q} -2 {input.barcode2:q} -o {output:q} -d {params.destiny:q} -m {params.meth:q} -h {params.head:q} -t ''{params.trimming_seq:q} > {log.std:q} 2> {log.error:q} 
         """
 

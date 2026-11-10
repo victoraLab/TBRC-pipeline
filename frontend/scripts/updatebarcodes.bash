@@ -5,13 +5,14 @@ source "$(cd "$(dirname "$0")" && pwd)/common.sh"
 require_tool rsync
 
 DTN_HOST="$(json_get_cluster_field dtn_host)"
-PIPELINE_ROOT="$(json_get_cluster_field pipeline_root)"
 # The app writes uploaded sets to TBRC_BC_DIR when it is set (a volume in the
 # the Docker host container) and to frontend/bc otherwise. This used to read
 # frontend/bc unconditionally, so in the container a new set was saved and
 # never reached the cluster, and its runs failed for want of barcodes.
 SOURCE_DIRECTORY="${TBRC_BC_DIR:-${FRONTEND_DIR}/bc}/"
-TARGET_DIRECTORY="${DTN_HOST}:${PIPELINE_ROOT}/data/barcodes/"
+# <pipeline_root>/data/barcodes/, or data/barcodes/ relative to the gate's root with the
+# cluster gate on (cluster.use_gate). The flags below are the shape the gate accepts.
+TARGET_DIRECTORY="${DTN_HOST}:$(cluster_path "data/barcodes/")"
 
 # Add new sets only; never rewrite one the cluster already has. The app's tree
 # and the cluster's are not identical (CBC is stored reverse-complemented with

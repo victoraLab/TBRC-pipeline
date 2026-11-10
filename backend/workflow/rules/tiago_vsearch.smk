@@ -27,10 +27,10 @@ rule rank_and_emit:
     shell:
         """
         python3 workflow/scripts/rank_wells.py \
-            --wells-dir {params.clustered} --sample {params.sample} \
-            --final-fasta {output.final} --collapsed-stats {output.collapsed} \
-            --verdicts {output.verdicts} --funnel {params.funnel} \
-            --topn {params.topn} --min-dominant-reads {params.mindom} \
-            --multiclonal-ratio {params.ratio} {params.droplow} > {log} 2>&1
-        touch {output.marker}
+            --wells-dir {params.clustered:q} --sample {params.sample:q} \
+            --final-fasta {output.final:q} --collapsed-stats {output.collapsed:q} \
+            --verdicts {output.verdicts:q} --funnel {params.funnel:q} \
+            --topn {params.topn:q} --min-dominant-reads {params.mindom:q} \
+            --multiclonal-ratio {params.ratio:q} {params.droplow:q} > {log:q} 2>&1
+        touch {output.marker:q}
         """

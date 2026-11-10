@@ -16,13 +16,13 @@ rule trim_reads:
     shell:"""
         (
             set -o pipefail
-            {params.read1_cmd} "{input[0]}" | fastx_trimmer -Q33 -f 3 -o "{output[0]}"
+            {params.read1_cmd:q} {input[0]:q} | fastx_trimmer -Q33 -f 3 -o {output[0]:q}
         ) &
         pid_r1=$!
 
         (
             set -o pipefail
-            {params.read2_cmd} "{input[1]}" | fastx_trimmer -Q33 -f 3 -o "{output[1]}"
+            {params.read2_cmd:q} {input[1]:q} | fastx_trimmer -Q33 -f 3 -o {output[1]:q}
         ) &
         pid_r2=$!
 

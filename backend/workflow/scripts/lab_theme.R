@@ -1,7 +1,6 @@
 # Victora-lab standard ggplot2 themes.
 #
-# Canonical definitions live in the lab Obsidian vault at
-# "Science and Programming/Code Snippets/ggplot2 themes.md". They are vendored
+# Canonical definitions live in the lab's notes on ggplot2 themes. They are vendored
 # here because the QC figures ship inside the archive users download, so they
 # must render on the cluster without depending on anything outside this repo.
 #

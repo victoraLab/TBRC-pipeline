@@ -1,0 +1,29 @@
+# TBRC behind Caddy, plain HTTP on :8080 inside the container network.
+#
+# The app has no login of its own, and it can start pipeline runs (and, when configured,
+# holds an SSH key to a cluster or storage server). So a password is required here.
+# `./tbrc setup` makes the hash and writes it into .env. By hand, with the password kept off
+# the command line:
+#   printf '%s\n' 'the-password' | docker run --rm -i caddy:2-alpine caddy hash-password
+# and put the result in .env as TBRC_PASSWORD_HASH, doubling every $ (compose expands $ in .env).
+#
+# For HTTPS on a hostname, replace ":8080" with that hostname and publish 80/443 in
+# docker-compose.yml; Caddy then obtains a certificate itself (it must be reachable from
+# the internet for that) -- or put this behind the institution's own TLS proxy.
+{
+	auto_https off
+}
+:8080 {
+	encode gzip
+	basic_auth {
+		{$TBRC_USER} {$TBRC_PASSWORD_HASH}
+	}
+	reverse_proxy tbrc:3838 {
+		# Shiny is a persistent websocket app; without these the session drops.
+		header_up Host {upstream_hostport}
+		header_up X-Real-IP {remote_host}
+	}
+	log {
+		output stdout
+	}
+}

@@ -48,15 +48,15 @@ rule prep_reads_vsearch:
         "logs/{}.prep.log".format(_SAMPLE),
     shell:
         """
-        mkdir -p "$(dirname {output.report})"
+        mkdir -p "$(dirname {output.report:q})"
         cutadapt -j {threads} \
-            -u {params.spacer} -U {params.spacer} \
-            -a {params.a3_r1} -A {params.a3_r2} \
-            -O {params.overlap} -e {params.err} \
-            -m {params.minlen} --pair-filter=any \
-            --json {output.report} \
-            -o {output.r1} -p {output.r2} \
-            {input.r1} {input.r2} > {log} 2>&1
+            -u {params.spacer:q} -U {params.spacer:q} \
+            -a {params.a3_r1:q} -A {params.a3_r2:q} \
+            -O {params.overlap:q} -e {params.err:q} \
+            -m {params.minlen:q} --pair-filter=any \
+            --json {output.report:q} \
+            -o {output.r1:q} -p {output.r2:q} \
+            {input.r1:q} {input.r2:q} > {log:q} 2>&1
         """
 
 
@@ -75,11 +75,11 @@ rule spacer_probe:
         "logs/{}.spacer_probe.log".format(_SAMPLE),
     shell:
         """
-        mkdir -p "$(dirname {output.report})"
+        mkdir -p "$(dirname {output.report:q})"
         python3 workflow/scripts/probe_spacer.py \
-            --reads {input.reads} --barcodes {input.barcodes} \
-            --expect {params.expect} --max-offset {params.maxoff} \
-            --limit {params.limit} --report {output.report} > {log} 2>&1
+            --reads {input.reads:q} --barcodes {input.barcodes:q} \
+            --expect {params.expect:q} --max-offset {params.maxoff:q} \
+            --limit {params.limit:q} --report {output.report:q} > {log:q} 2>&1
         """
 
 
@@ -99,16 +99,16 @@ rule merge_vsearch:
         minlen=param("merge", "min_len", 300),
     shell:
         """
-        mkdir -p "$(dirname {output.log})"
-        vsearch --fastq_mergepairs {input.r1} --reverse {input.r2} \
-            --fastqout {output.merged} \
+        mkdir -p "$(dirname {output.log:q})"
+        vsearch --fastq_mergepairs {input.r1:q} --reverse {input.r2:q} \
+            --fastqout {output.merged:q} \
             --fastq_allowmergestagger \
-            --fastq_minovlen {params.minov} \
-            --fastq_maxdiffs {params.maxdiffs} \
-            --fastq_maxdiffpct {params.maxdiffpct} \
-            --fastq_minmergelen {params.minlen} \
+            --fastq_minovlen {params.minov:q} \
+            --fastq_maxdiffs {params.maxdiffs:q} \
+            --fastq_maxdiffpct {params.maxdiffpct:q} \
+            --fastq_minmergelen {params.minlen:q} \
             --threads {threads} \
-            --log {output.log} 2>&1
+            --log {output.log:q} 2>&1
         """
 
 
@@ -129,9 +129,9 @@ rule demux_vsearch:
     shell:
         """
         bash workflow/scripts/demux_wells.sh \
-            -f {input.merged} -1 {input.barcode1} -2 {input.barcode2} \
-            -d {params.destiny} -o {output.sentinel} \
-            -n {params.minreads} -u {params.keepunmatched} > {log} 2>&1
+            -f {input.merged:q} -1 {input.barcode1:q} -2 {input.barcode2:q} \
+            -d {params.destiny:q} -o {output.sentinel:q} \
+            -n {params.minreads:q} -u {params.keepunmatched:q} > {log:q} 2>&1
         """
 
 
@@ -168,9 +168,12 @@ rule wells_vsearch:
         restore="1" if PIPELINE == "tiago_vsearch" else "0",
     log:
         "logs/{}.wells.log".format(_SAMPLE),
+    # cluster_one reads its arguments by position, and the light-chain 5' sequence is empty
+    # whenever Trim primers is off. '' in front of :q keeps an empty value as an (empty) argument;
+    # :q alone drops it and every later argument moves up one place.
     shell:
         """
-        mkdir -p {params.clustered}
+        mkdir -p {params.clustered:q}
         # Light-chain rescue, applied per well AFTER demultiplexing -- the same
         # place classic_luka applies it, and the only place it can go: the 5'
         # handle sits immediately after BC1, so stripping it any earlier would
@@ -231,13 +234,13 @@ rule wells_vsearch:
             rm -f "${{out}}${{w}}.uniq.fa" "${{out}}${{w}}.cent.fa" "${{out}}${{w}}.uniq.uc"
         }}
         export -f cluster_one
-        ls {params.split2}*.fastq 2>/dev/null \
+        ls {params.split2:q}*.fastq 2>/dev/null \
           | xargs -P {threads} -I{{}} bash -c \
-            'cluster_one "$@"' _ {{}} {params.clustered} {params.ident} {params.iddef} {params.minlen} {params.topn} \
-            '{params.preprocess}' '{params.light_5p}' '{params.light_3p}' {params.light_footprint} \
-            {params.mask} {params.restore} \
-          > {log} 2>&1
-        touch {output.sentinel}
+            'cluster_one "$@"' _ {{}} {params.clustered:q} {params.ident:q} {params.iddef:q} {params.minlen:q} {params.topn:q} \
+            ''{params.preprocess:q} ''{params.light_5p:q} ''{params.light_3p:q} {params.light_footprint:q} \
+            {params.mask:q} {params.restore:q} \
+          > {log:q} 2>&1
+        touch {output.sentinel:q}
         """
 
 

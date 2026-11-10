@@ -2,6 +2,7 @@
     "__default__": {
         "cpus_per_task": "1",
         "name": "{rule}",
+        "account": "",
         "partition": "your_partition",
         "time": "02:00:00",
         "mem": "4G",

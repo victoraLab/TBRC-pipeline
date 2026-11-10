@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TBRC tutorial</title>
+<style>
+:root{
+  --bg:#fbfcf9; --panel:#f3f7f1; --line:#d6e2d4; --ink:#22332a; --soft:#4f6655;
+  --accent:#a85b10; --on-accent:#ffffff; --sage:#5f7965; --on-sage:#ffffff;
+  --code-bg:#22332a; --code-ink:#eef4ec; --code-soft:#a9bfae; --warn-bg:#fbf3e4; --warn-line:#c9a46a;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#141b17; --panel:#1c2620; --line:#32433a; --ink:#e4ece5; --soft:#a4b8a9;
+  --accent:#e6a968; --on-accent:#20160a; --sage:#8fad8d; --on-sage:#14201a;
+  --code-bg:#0d1310; --code-ink:#dfe9e0; --code-soft:#8fa596; --warn-bg:#2b2316; --warn-line:#8a6d3f; color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --bg:#141b17; --panel:#1c2620; --line:#32433a; --ink:#e4ece5; --soft:#a4b8a9;
+  --accent:#e6a968; --on-accent:#20160a; --sage:#8fad8d; --on-sage:#14201a;
+  --code-bg:#0d1310; --code-ink:#dfe9e0; --code-soft:#8fa596; --warn-bg:#2b2316; --warn-line:#8a6d3f; color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:84px}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.6 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+h1,h2,h3{font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;line-height:1.2;text-wrap:balance;margin:0}
+h1{font-size:clamp(2.1rem,5vw,3.1rem);font-weight:600}
+h2{font-size:1.75rem;font-weight:600}
+h3{font-size:1.15rem;font-weight:600;margin-top:1.6rem}
+p{margin:0}
+a{color:var(--accent)}
+code{font:.88em/1.5 ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:.05em .3em;overflow-wrap:anywhere}
+.wrap{max-width:1120px;margin:0 auto;padding-block:48px 80px;padding-left:max(20px,env(safe-area-inset-left,0px));padding-right:max(20px,env(safe-area-inset-right,0px))}
+header{display:grid;gap:14px;max-width:46rem}
+.eyebrow{font-size:.8rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--sage)}
+.lede{font-size:1.15rem;color:var(--soft)}
+.flow{list-style:none;padding:0;margin:34px 0 0;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:22px}
+.flow li{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;display:grid;gap:4px;align-content:start}
+.flow b{font-size:.95rem}
+.flow span{font-size:.84rem;line-height:1.35;color:var(--soft)}
+.flow li:not(:last-child)::after{content:"\2192";position:absolute;right:-11px;top:50%;transform:translate(50%,-50%);color:var(--sage);font-size:1.05rem;font-weight:700}
+.layout{display:grid;grid-template-columns:210px minmax(0,1fr);gap:56px;margin-top:52px;align-items:start}
+nav{position:sticky;top:20px}
+.strip{list-style:none;margin:0;padding:10px 8px;display:grid;gap:4px;background:var(--panel);border:1px solid var(--line);border-radius:26px}
+.strip a{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--soft);font-size:.87rem;line-height:1.2;padding:3px 8px 3px 3px;border-radius:20px}
+.strip a:hover{color:var(--ink)}
+.well{flex:none;width:32px;height:32px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:.85rem;background:var(--bg);border:2px solid var(--line);color:var(--soft)}
+.strip a.done .well{background:var(--sage);border-color:var(--sage);color:var(--on-sage)}
+.strip a[aria-current] .well{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.strip a[aria-current]{color:var(--ink);font-weight:600}
+main{display:grid;gap:60px;min-width:0}
+section{display:grid;gap:14px;min-width:0}
+.step-head{display:flex;align-items:center;gap:14px}
+.step-head .well{width:42px;height:42px;font-size:1.05rem;background:var(--sage);border-color:var(--sage);color:var(--on-sage)}
+.routes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.route{font:inherit;color:inherit;text-align:left;background:var(--panel);border:2px solid var(--line);border-radius:10px;padding:14px;cursor:pointer;display:grid;gap:6px;align-content:start}
+.route b{font-size:1rem}
+.route span{font-size:.9rem;line-height:1.4;color:var(--soft)}
+.route[aria-pressed="true"]{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.route:focus-visible,.copy:focus-visible,.strip a:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+body[data-route="terminal"] [data-for]:not([data-for~="terminal"]),
+body[data-route="web"] [data-for]:not([data-for~="web"]),
+body[data-route="cluster"] [data-for]:not([data-for~="cluster"]){display:none}
+.tag{display:inline-block;font-size:.72rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--sage)}
+body[data-route] .tag{display:none}
+.block{display:grid;gap:12px;min-width:0}
+.cmd{position:relative;min-width:0}
+pre{margin:0;background:var(--code-bg);color:var(--code-ink);border-radius:8px;padding:14px 16px;overflow-x:auto;font:.84rem/1.6 ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace}
+.cmd pre{padding-right:74px}
+pre .c{color:var(--code-soft)}
+pre.out{background:var(--panel);color:var(--ink);border:1px solid var(--line)}
+.copy{position:absolute;top:8px;right:8px;font:600 .74rem/1 ui-sans-serif,-apple-system,sans-serif;color:var(--code-ink);background:var(--code-bg);border:1px solid var(--code-soft);border-radius:5px;padding:6px 9px;cursor:pointer}
+.tw{overflow-x:auto;min-width:0;border:1px solid var(--line);border-radius:8px}
+table{border-collapse:collapse;width:100%;font-size:.93rem;line-height:1.45}
+th,td{text-align:left;vertical-align:top;padding:9px 12px;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:0}
+td:first-child code{overflow-wrap:normal}
+th{background:var(--panel);font-size:.78rem;letter-spacing:.05em;text-transform:uppercase;color:var(--soft)}
+.note{background:var(--panel);border-left:4px solid var(--sage);border-radius:0 8px 8px 0;padding:12px 16px}
+.warn{background:var(--warn-bg);border-left:4px solid var(--warn-line);border-radius:0 8px 8px 0;padding:12px 16px;display:grid;gap:8px}
+.decode{display:flex;flex-wrap:wrap;gap:6px;font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace}
+.decode div{display:grid;gap:3px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:7px 10px;text-align:center}
+.decode b{font-size:1.02rem}
+.decode span{font:.74rem/1.2 ui-sans-serif,-apple-system,sans-serif;color:var(--soft)}
+ul,ol.plain{margin:0;padding-left:1.25em;display:grid;gap:6px}
+footer{margin-top:64px;padding-top:18px;border-top:1px solid var(--line);font-size:.88rem;color:var(--soft)}
+@media (max-width:900px){
+  html{scroll-padding-top:76px}
+  .layout{grid-template-columns:minmax(0,1fr);gap:28px}
+  nav{top:0;z-index:5;background:var(--bg);padding-block:8px;margin-inline:-4px}
+  .strip{display:flex;overflow-x:auto;border-radius:28px;padding:6px}
+  .strip a span.t{display:none}
+  .strip a{padding:0}
+  .flow{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .flow li::after{display:none}
+  .routes{grid-template-columns:minmax(0,1fr)}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">TBRC tutorial</p>
+  <h1>From a FASTQ pair to annotated wells</h1>
+  <p class="lede">This page takes you from a fresh download to your first finished run. Allow up to 30 minutes the first time. Most of that is a one-time build of the software; a small run takes about a minute.</p>
+</header>
+
+<ol class="flow" aria-label="What TBRC does to a library, in order">
+  <li><b>Reads</b><span>The FASTQ files of one library</span></li>
+  <li><b>Trim and merge</b><span>Adapters off, read pairs joined</span></li>
+  <li><b>Sort into wells</b><span>Barcodes give plate, row and column</span></li>
+  <li><b>Pick sequences</b><span>The top sequences of each well</span></li>
+  <li><b>Annotate</b><span>V, D and J genes with IgBLAST, clones if you ask</span></li>
+  <li><b>Deliver</b><span>A report, tables and an archive</span></li>
+</ol>
+
+<div class="layout">
+<nav aria-label="Steps">
+  <ol class="strip">
+    <li><a href="#a"><span class="well">A</span><span class="t">Choose a route</span></a></li>
+    <li><a href="#b"><span class="well">B</span><span class="t">Install what you need</span></a></li>
+    <li><a href="#c"><span class="well">C</span><span class="t">Run the setup</span></a></li>
+    <li><a href="#d"><span class="well">D</span><span class="t">Check it works</span></a></li>
+    <li><a href="#e"><span class="well">E</span><span class="t">Make a small library</span></a></li>
+    <li><a href="#f"><span class="well">F</span><span class="t">Run it</span></a></li>
+    <li><a href="#g"><span class="well">G</span><span class="t">Read the results</span></a></li>
+    <li><a href="#h"><span class="well">H</span><span class="t">When it goes wrong</span></a></li>
+  </ol>
+</nav>
+
+<main>
+
+<section id="a">
+  <div class="step-head"><span class="well">A</span><h2>Choose a route</h2></div>
+  <p>Pick the one closest to what you want. The rest of this page then shows only the steps for that route. You can change your mind later by running the setup again.</p>
+  <div class="routes" role="group" aria-label="Choose a route">
+    <button class="route" data-pick="terminal" aria-pressed="false" type="button"><b>This computer, terminal</b><span>The simplest. Everything runs in Docker on your computer and you type the commands.</span></button>
+    <button class="route" data-pick="web" aria-pressed="false" type="button"><b>This computer, web app</b><span>A form in your browser behind a password, for you alone or for your lab.</span></button>
+    <button class="route" data-pick="cluster" aria-pressed="false" type="button"><b>SLURM cluster</b><span>Your computer sends the work to a cluster. Best for many or large libraries.</span></button>
+  </div>
+  <p class="note">Not sure? Start with <b>This computer, terminal</b>. It is the quickest way to see TBRC work.</p>
+</section>
+
+<section id="b">
+  <div class="step-head"><span class="well">B</span><h2>Install what you need</h2></div>
+  <div class="tw"><table>
+    <thead><tr><th>What</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td><code>git</code></td><td>To download TBRC.</td></tr>
+      <tr><td>Python 3.9 or newer</td><td>Runs <code>./tbrc</code>. Nothing else needs installing for it.</td></tr>
+      <tr data-for="terminal web"><td><a href="https://www.docker.com/products/docker-desktop/">Docker Desktop</a>, running</td><td>Holds the pipeline tools, so you do not install them yourself. Leave about 8 GB free for the terminal route and about 16 GB for the web app.</td></tr>
+      <tr data-for="cluster"><td><code>ssh</code>, <code>rsync</code>, <code>jq</code></td><td>To reach the cluster and copy files to it.</td></tr>
+      <tr data-for="cluster"><td>A login to the cluster with an SSH key</td><td>TBRC never types a password, so a host that asks for one counts as unreachable.</td></tr>
+      <tr data-for="cluster"><td>conda on the cluster, and a SLURM partition you may use</td><td>The pipeline runs in a conda environment and its jobs go to SLURM.</td></tr>
+      <tr><td>One library's FASTQ files</td><td>Illumina R1 and R2, or one FASTQ for Oxford Nanopore. TBRC ships no sequencing data.</td></tr>
+      <tr><td>The name of its barcode set</td><td><code>B</code> or <code>B2</code> for B cells, <code>T</code> for T cells, <code>nanopore_IgG_IgK</code> for Nanopore, or <a href="#own-barcodes">your own</a>.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Check that the tools answer:</p>
+  <div class="block" data-for="terminal web"><pre class="sh">git --version
+python3 --version
+docker info --format '{{.ServerVersion}}'</pre></div>
+  <div class="block" data-for="cluster"><pre class="sh">git --version
+python3 --version
+ssh your_login_host hostname</pre></div>
+  <p class="note">Tested on one Apple Silicon Mac; not tested on Linux or Intel. The software may not build or may behave differently there.</p>
+</section>
+
+<section id="c">
+  <div class="step-head"><span class="well">C</span><h2>Run the setup</h2></div>
+  <p>Download TBRC and start the guided setup. It asks one question at a time, and asks again if an answer is not valid. Type the number of your choice.</p>
+  <pre class="sh">git clone https://github.com/victoraLab/TBRC-pipeline.git TBRC
+cd TBRC
+./tbrc setup</pre>
+
+  <div class="tw"><table>
+    <thead><tr><th>It asks</th><th>Answer</th></tr></thead>
+    <tbody>
+      <tr data-for="terminal web"><td>Will your runs happen on this computer, or on a cluster?</td><td><b>1</b>, on this computer</td></tr>
+      <tr data-for="cluster"><td>Will your runs happen on this computer, or on a cluster?</td><td><b>2</b>, on a cluster</td></tr>
+      <tr data-for="terminal web"><td>Where is your raw data?</td><td><b>1</b>, on this computer</td></tr>
+      <tr data-for="cluster"><td>Where is your raw data?</td><td><b>1</b>, on this computer, or <b>2</b> for a file server you reach over SSH. For a server it also asks for a short name, <code>user@host:/raw/</code>, <code>user@host:/results/</code> and the SSH port.</td></tr>
+      <tr data-for="terminal cluster"><td>Do you want to work in the terminal only, or use the web app too?</td><td><b>1</b>, the terminal only</td></tr>
+      <tr data-for="web"><td>Do you want to work in the terminal only, or use the web app too?</td><td><b>2</b>, the web app</td></tr>
+      <tr data-for="web"><td>Who will open the web app?</td><td><b>1</b>, only me, unless you have read the warning below</td></tr>
+      <tr data-for="web"><td>Choose a password for the web app</td><td>At least 8 characters, typed twice. It is hidden and never saved as plain text.</td></tr>
+      <tr data-for="cluster"><td>Login host of the cluster</td><td>What you type after <code>ssh</code>, such as <code>me@login.example.org</code></td></tr>
+      <tr data-for="cluster"><td>Data-transfer host</td><td>Leave it blank if your cluster has none.</td></tr>
+      <tr data-for="cluster"><td>Folder on the cluster for the backend</td><td>An absolute path, such as <code>/home/me/TBRC/backend</code></td></tr>
+      <tr data-for="cluster"><td>Conda environment, and the folder holding <code>conda</code></td><td>Press Return for <code>snakemake</code>. The folder is usually <code>.../miniforge3/condabin</code>.</td></tr>
+      <tr data-for="cluster"><td>SLURM account and partition</td><td>Leave the account blank if your cluster needs none.</td></tr>
+      <tr><td>Folder with a small test library</td><td>Press Return to skip. You will make one in step E.</td></tr>
+      <tr data-for="terminal web"><td>Build them now?</td><td>Yes, this builds the Docker images. Up to about 15 minutes, and it needs internet. Only the first time.</td></tr>
+      <tr data-for="web"><td>Start the web app now?</td><td>Yes.</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="warn" data-for="web">
+    <p><b>Before you open the web app to the whole lab.</b> The app listens on your network over plain HTTP, so the password and everything uploaded cross the network unencrypted. Everyone shares one password and there are no user names, so anyone who logs in can submit a run under any user id. To add HTTPS, follow the comment at the top of <code>deploy/docker/Caddyfile</code>.</p>
+  </div>
+
+  <div class="block" data-for="cluster">
+    <h3>What is left to do on the cluster</h3>
+    <p>When it finishes, the setup prints these four steps with your own paths filled in. Do them once, then run <code>./tbrc check</code>.</p>
+    <ol class="plain">
+      <li>Copy <code>backend/</code> and <code>environment.yml</code> to the cluster with <code>rsync</code>.</li>
+      <li>On the cluster, create the conda environment.</li>
+      <li>On the cluster, build the IgBLAST databases. This needs NCBI's <code>internal_data/</code> and <code>optional_file/</code> folders; see <code>backend/igblast_setup.md</code>.</li>
+      <li>Make sure <code>ssh</code> reaches the login and data-transfer hosts with a key and no password prompt.</li>
+    </ol>
+  </div>
+
+  <p class="note" data-for="terminal web">During the IgBLAST step you will see many lines saying <code>Skipping duplicate seq_id</code>. That is expected: some T-cell genes are listed under both TRA and TRD, and each is kept once.</p>
+</section>
+
+<section id="d">
+  <div class="step-head"><span class="well">D</span><h2>Check it works</h2></div>
+  <p>The setup already ran this check. Run it again at any time.</p>
+  <div class="block" data-for="terminal web"><pre class="sh">./tbrc check --local
+./tbrc test</pre>
+  <p>The check should end like this. The first lines list placeholder cluster names, which runs on your computer do not use.</p>
+  <pre class="out">== this machine (for --local runs)
+[ OK ] pipeline tools: not on PATH, but Docker image tbrc-backend:arm64 is available
+[ OK ] IgBLAST internal_data in backend/igblast
+[ OK ] IgBLAST mouse ig_all panel built locally
+[ OK ] IgBLAST human ig_all panel built locally
+
+All checks passed.</pre></div>
+  <div class="block" data-for="cluster"><pre class="sh">./tbrc check
+./tbrc test</pre></div>
+  <p>Every <code>[FAIL]</code> comes with a line starting <code>-&gt;</code> that says what to do. <code>./tbrc test</code> needs no data: it confirms that the workflow can plan a run.</p>
+</section>
+
+<section id="e">
+  <div class="step-head"><span class="well">E</span><h2>Make a small library</h2></div>
+  <p>Take the first 100,000 read pairs of one of your libraries. A read is four lines in a FASTQ file, so that is 400,000 lines. Keep <code>R1</code> and <code>R2</code> in the file names, and put nothing else in the folder.</p>
+  <pre class="sh">mkdir mini
+gzip -dc /path/to/sample_R1_001.fastq.gz | head -n 400000 | gzip &gt; mini/mini_R1_001.fastq.gz
+gzip -dc /path/to/sample_R2_001.fastq.gz | head -n 400000 | gzip &gt; mini/mini_R2_001.fastq.gz</pre>
+  <p class="note">Names may use letters, digits, <code>.</code>, <code>_</code> and <code>-</code>, with no spaces. TBRC refuses anything else and tells you which field to fix.</p>
+</section>
+
+<section id="f">
+  <div class="step-head"><span class="well">F</span><h2>Run it</h2></div>
+
+  <div class="block" data-for="terminal">
+    <span class="tag">Terminal route</span>
+    <pre class="sh">./tbrc run --local --cores 8 --user me --run-name first_test --fastq-dir mini \
+    --primer-set T --pipeline tiago_vsearch --species mouse --panel trb --clonality</pre>
+    <p>This example is for mouse T cells. For B cells use <code>--primer-set B2</code> and <code>--panel ig_all</code>. A library of this size took 41 seconds on 8 CPUs of an Apple Silicon Mac.</p>
+  </div>
+
+  <div class="block" data-for="cluster">
+    <span class="tag">Cluster route</span>
+    <pre class="sh">./tbrc run --user me --run-name first_test --fastq-dir mini \
+    --primer-set T --pipeline tiago_vsearch --species mouse --panel trb --clonality</pre>
+    <p>The files are copied to the cluster and the terminal follows the run. Expect tens of minutes, so use <code>tmux</code> or <code>nohup</code> if you may disconnect. For data already on your file server, replace <code>--run-name first_test --fastq-dir mini</code> with <code>--server labnas --folder plate_001</code>, using the short name you gave in the setup.</p>
+  </div>
+
+  <div class="block" data-for="terminal cluster">
+    <div class="tw"><table>
+      <thead><tr><th>Option</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr data-for="terminal"><td><code>--local --cores 8</code></td><td>Run on this computer with 8 CPUs.</td></tr>
+        <tr><td><code>--user me</code></td><td>Who the run belongs to. It names the results folder.</td></tr>
+        <tr><td><code>--run-name first_test</code></td><td>The name of this run. It starts every sequence name.</td></tr>
+        <tr><td><code>--fastq-dir mini</code></td><td>A folder holding exactly one R1 and one R2 file.</td></tr>
+        <tr><td><code>--primer-set T</code></td><td>The barcode set of the library: <code>B</code>, <code>B2</code>, <code>T</code>, <code>nanopore_IgG_IgK</code> or your own.</td></tr>
+        <tr><td><code>--pipeline tiago_vsearch</code></td><td>How reads are assembled. <code>tiago_vsearch</code> is the default for Illumina. The others are <code>classic_luka</code>, <code>tiago_sulkseq</code> for MIBS libraries, and <code>tiago_nanopore</code>.</td></tr>
+        <tr><td><code>--species mouse</code></td><td><code>mouse</code> or <code>human</code>.</td></tr>
+        <tr><td><code>--panel trb</code></td><td>The germline genes to annotate against: <code>igh</code>, <code>ig_all</code>, <code>tra</code>, <code>trb</code>, <code>tcr_all</code>, <code>all_receptors</code> or <code>ig_b6</code>. A check widens a single-locus panel when the plate needs it.</td></tr>
+        <tr><td><code>--clonality</code></td><td>Also group sequences into clones.</td></tr>
+      </tbody>
+    </table></div>
+    <p>Add <code>--dry-run</code> to see what would be done without running it. <code>./tbrc run --help</code> lists every option.</p>
+  </div>
+
+  <div class="block" data-for="terminal">
+    <p>A finished run ends with its outputs marked OK:</p>
+    <pre class="out">8 of 8 steps (100%) done
+
+[ OK ] IMGT-ready FASTA: first_test.imgt.ready.fasta
+[ OK ] archive: first_test.zip
+[ OK ] report: first_test.report.html
+[ OK ] annotation status: qc/annotation/status.tsv
+[ OK ] IgBLAST table: igblast/first_test.igblast.tsv</pre>
+  </div>
+
+  <div class="block" data-for="web">
+    <span class="tag">Web app route</span>
+    <p>Open <a href="http://localhost:8080">http://localhost:8080</a>. The user name is <code>tbrc</code> and the password is the one you chose. Then fill in the form on the left:</p>
+    <div class="tw"><table>
+      <thead><tr><th>Field</th><th>Set it to</th></tr></thead>
+      <tbody>
+        <tr><td>User name</td><td>Yours. It names the results folder.</td></tr>
+        <tr><td>Method of input</td><td>Upload</td></tr>
+        <tr><td>Upload paired FASTQ files</td><td>Both files from your <code>mini</code> folder.</td></tr>
+        <tr><td>Core assembly pipeline</td><td>vsearch cluster assembly (<code>tiago_vsearch</code>)</td></tr>
+        <tr><td>Barcode set</td><td>The set of your library. It also fills in the trim sequence.</td></tr>
+        <tr><td>Run on this server (not HPC)</td><td>On</td></tr>
+        <tr><td>Run IGBlast annotation, and clonality</td><td>On, with your species and panel.</td></tr>
+      </tbody>
+    </table></div>
+    <p>Then press <b>Run</b> and watch the progress bar. A warning box names any field that needs fixing.</p>
+  </div>
+
+  <div class="block" id="own-barcodes">
+    <h3>Using your own barcode set</h3>
+    <p>A barcode set is a folder with two text files, <code>BC1.txt</code> and <code>BC2.txt</code>, each with a name and a barcode sequence on every line. Copy the layout of <code>backend/data/barcodes/T/</code>. A new set has no default trim sequence, so give it with <code>--trim-seq</code> (10 to 64 capital IUPAC letters). In the web app, use the barcode upload card on the left of the page.</p>
+  </div>
+</section>
+
+<section id="g">
+  <div class="step-head"><span class="well">G</span><h2>Read the results</h2></div>
+  <p data-for="terminal web">Results are in <code>backend/results/me/first_test/first_test/</code>, using your own user and run names.</p>
+  <p data-for="cluster">Results stay on the cluster under <code>results/me/first_test/</code> unless you add <code>--push</code>, which sends the archive to your file server.</p>
+  <div class="tw"><table>
+    <thead><tr><th>File</th><th>What it is</th></tr></thead>
+    <tbody>
+      <tr><td><code>first_test.report.html</code></td><td><b>Open this first.</b> Receptor type, repertoire, wells by locus, plate maps, per-plate yield, read depth and sequence lengths. There is a PDF copy beside it.</td></tr>
+      <tr><td><code>first_test.imgt.ready.fasta</code></td><td>The final sequences with the 5' handle trimmed, ready for IMGT/HighV-QUEST.</td></tr>
+      <tr><td><code>first_test.final.fasta</code></td><td>The same sequences before that trim.</td></tr>
+      <tr><td><code>igblast/first_test.igblast.tsv</code></td><td>One row per sequence: <code>locus</code>, <code>productive</code>, <code>v_call</code>, <code>d_call</code>, <code>j_call</code>, the junction and more.</td></tr>
+      <tr><td><code>clonality/first_test.clonality.tsv</code></td><td>The clone of each sequence. <code>.clonality.summary.tsv</code> counts the sequences in each clone.</td></tr>
+      <tr><td><code>qc/</code></td><td>The evidence behind the report, by stage. <code>qc/assembly/well_verdicts.tsv</code> says what happened to each well, and <code>qc/annotation/status.tsv</code> says what was annotated and how.</td></tr>
+      <tr><td><code>first_test.zip</code></td><td>The archive to keep or share. <code>ARCHIVE_CONTENTS.txt</code> inside it lists what it holds.</td></tr>
+    </tbody>
+  </table></div>
+  <h3>Reading a sequence name</h3>
+  <p>Every sequence name says where the sequence came from:</p>
+  <div class="decode" role="img" aria-label="The sequence name first_testP01A01_1-149 is run first_test, plate P01, row A, column 01, rank 1 in its well, with 149 reads">
+    <div><b>first_test</b><span>run</span></div>
+    <div><b>P01</b><span>plate</span></div>
+    <div><b>A</b><span>row</span></div>
+    <div><b>01</b><span>column</span></div>
+    <div><b>_1</b><span>rank in well</span></div>
+    <div><b>-149</b><span>reads</span></div>
+  </div>
+  <p>By default TBRC keeps up to three sequences per well, so <code>_1</code> is the most abundant. <code>--contigs</code> changes that number.</p>
+</section>
+
+<section id="h">
+  <div class="step-head"><span class="well">H</span><h2>When it goes wrong</h2></div>
+  <div class="tw"><table>
+    <thead><tr><th>You see</th><th>What it means</th><th>What to do</th></tr></thead>
+    <tbody>
+      <tr><td><code>[FAIL]</code> in a check</td><td>Something is missing or unreachable.</td><td>Do what the <code>-&gt;</code> line below it says, then check again.</td></tr>
+      <tr><td><code>error: sample.json refused</code></td><td>A value is not allowed. Nothing has been created or sent yet.</td><td>Fix the fields it names.</td></tr>
+      <tr><td><code>run folder already exists</code></td><td>That user and run name were used before.</td><td>Pick another <code>--run-name</code>, or add <code>--force</code> to reuse the folder.</td></tr>
+      <tr><td><code>A rule failed</code></td><td>One step of the workflow stopped.</td><td>Read <code>backend/data/runs/&lt;user&gt;/&lt;run&gt;/backend.log</code>. Each step's log is under <code>backend/logs/</code>.</td></tr>
+      <tr data-for="web"><td>The web app does not start</td><td>Port 8080 may be in use.</td><td>Change <code>TBRC_PORT</code> in <code>deploy/docker/.env</code> and start it again.</td></tr>
+      <tr data-for="cluster"><td>A host counts as unreachable</td><td>It asked for a password. TBRC uses SSH in batch mode.</td><td>Add a key for that host in <code>~/.ssh/config</code>.</td></tr>
+    </tbody>
+  </table></div>
+  <p><code>./tbrc</code> ends with exit status 0 on success, 1 for a failed check or test, and 2 for a usage or environment problem.</p>
+  <h3>Where to go next</h3>
+  <ul>
+    <li>Everything TBRC accepts, field by field: <a href="https://github.com/victoraLab/TBRC-pipeline#what-is-accepted-and-what-a-refusal-looks-like">What is accepted</a>.</li>
+    <li>What goes in the archive, and the light and full scopes: <a href="https://github.com/victoraLab/TBRC-pipeline#what-ends-up-in-the-results-archive">The results archive</a>.</li>
+    <li>How each assembly pipeline works: <a href="https://github.com/victoraLab/TBRC-pipeline/blob/main/docs/pipeline-diagrams.md">Pipeline diagrams</a>.</li>
+    <li>Who can reach the web app, and how to protect it: <a href="https://github.com/victoraLab/TBRC-pipeline#security-the-app-has-no-login-of-its-own">Security</a>.</li>
+  </ul>
+</section>
+
+</main>
+</div>
+
+<footer>TBRC tutorial. Tested on one Apple Silicon Mac; not tested on Linux or Intel. Times on this page were measured there.</footer>
+</div>
+
+<script>
+(function () {
+  var body = document.body;
+  var buttons = Array.prototype.slice.call(document.querySelectorAll(".route"));
+  function choose(route) {
+    body.setAttribute("data-route", route);
+    buttons.forEach(function (b) { b.setAttribute("aria-pressed", String(b.getAttribute("data-pick") === route)); });
+    try { localStorage.setItem("tbrc-tutorial-route", route); } catch (e) {}
+  }
+  var saved = null;
+  try { saved = localStorage.getItem("tbrc-tutorial-route"); } catch (e) {}
+  var known = buttons.some(function (b) { return b.getAttribute("data-pick") === saved; });
+  choose(known ? saved : "terminal");
+  buttons.forEach(function (b) { b.addEventListener("click", function () { choose(b.getAttribute("data-pick")); }); });
+
+  function selectText(node) {
+    var range = document.createRange();
+    range.selectNodeContents(node);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("pre.sh"), function (pre) {
+    var box = document.createElement("div");
+    box.className = "cmd";
+    pre.parentNode.insertBefore(box, pre);
+    box.appendChild(pre);
+    var button = document.createElement("button");
+    button.className = "copy";
+    button.type = "button";
+    button.textContent = "Copy";
+    function done(word) {
+      button.textContent = word;
+      setTimeout(function () { button.textContent = "Copy"; }, 1500);
+    }
+    function fallback() {
+      selectText(pre);
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) {}
+      done(ok ? "Copied" : "Selected");
+    }
+    button.addEventListener("click", function () {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(pre.textContent).then(function () { done("Copied"); }, fallback);
+      } else {
+        fallback();
+      }
+    });
+    box.appendChild(button);
+  });
+
+  var links = Array.prototype.slice.call(document.querySelectorAll(".strip a"));
+  var sections = links.map(function (a) { return document.querySelector(a.getAttribute("href")); });
+  function mark(index) {
+    links.forEach(function (a, i) {
+      a.classList.toggle("done", i < index);
+      if (i === index) { a.setAttribute("aria-current", "step"); } else { a.removeAttribute("aria-current"); }
+    });
+  }
+  function spy() {
+    var line = window.innerHeight * 0.3, current = 0;
+    sections.forEach(function (s, i) { if (s.getBoundingClientRect().top <= line) { current = i; } });
+    mark(current);
+  }
+  window.addEventListener("scroll", spy, { passive: true });
+  window.addEventListener("resize", spy);
+  spy();
+}());
+</script>
+</body>
+</html>

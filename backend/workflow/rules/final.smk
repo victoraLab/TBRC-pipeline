@@ -34,8 +34,14 @@ FINAL_PARAMS = dict(
     primer_set=PRIMER_SET,
 )
 
+# Every value is quoted by Snakemake (:q), so a quote, a space or a $( ) in it stays text.
+# The '' in front of each is not decoration: :q leaves an empty value empty, so -t {params.x:q}
+# with no trim sequence would print "-t -y ..." and final.script.sh's getopts would take -y for
+# the value of -t. A shell reads ''abc as abc and '' as an empty argument, so the flag always
+# keeps its value. Several of these are legitimately empty (trim sequence, email, results path
+# for a local run, the IgBLAST database paths).
 FINAL_SHELL = """
-        workflow/scripts/final.script.sh -i {input} -o {params.archive} -s '{params.base_name}' -d '{params.base_path}' -t '{params.trimming_seq}' -y '{params.should_trim}' -L '{params.preprocess_method}' -u '{params.server_user}'  -e '{params.notification_email}' -k '{params.should_keep}' -p '{params.server_results_path}' -j '{params.server_storage}' -r '{params.server_ssh_port}' -m '{params.server_transfer_mode}' -g '{params.run_igblast}' -q '{params.run_clonality}' -f '{params.archive_format}' -z '{params.igblast_species}' -l '{params.igblast_panel}' -b '{params.igblast_bin}' -c '{params.igblast_organism}' -v '{params.igblast_db_v}' -w '{params.igblast_db_d}' -x '{params.igblast_db_j}' -I '{params.igblast_data}' -a '{params.igblast_aux}' -A '{params.archive_scope}' -P '{params.pipeline_name}' -B '{params.primer_set}' -R '{params.receptor_check}' -G '{params.run_group}' -F '{params.primer_footprint}' -T '{params.light_tail}' > {log.std} 2> {log.error}
+        workflow/scripts/final.script.sh -i {input:q} -o {params.archive:q} -s ''{params.base_name:q} -d ''{params.base_path:q} -t ''{params.trimming_seq:q} -y ''{params.should_trim:q} -L ''{params.preprocess_method:q} -u ''{params.server_user:q}  -e ''{params.notification_email:q} -k ''{params.should_keep:q} -p ''{params.server_results_path:q} -j ''{params.server_storage:q} -r ''{params.server_ssh_port:q} -m ''{params.server_transfer_mode:q} -g ''{params.run_igblast:q} -q ''{params.run_clonality:q} -f ''{params.archive_format:q} -z ''{params.igblast_species:q} -l ''{params.igblast_panel:q} -b ''{params.igblast_bin:q} -c ''{params.igblast_organism:q} -v ''{params.igblast_db_v:q} -w ''{params.igblast_db_d:q} -x ''{params.igblast_db_j:q} -I ''{params.igblast_data:q} -a ''{params.igblast_aux:q} -A ''{params.archive_scope:q} -P ''{params.pipeline_name:q} -B ''{params.primer_set:q} -R ''{params.receptor_check:q} -G ''{params.run_group:q} -F ''{params.primer_footprint:q} -T ''{params.light_tail:q} > {log.std:q} 2> {log.error:q}
         """
 
 FINAL_ARCHIVE = expand("{destiny}/{sample}/{sample}.{archive_ext}", destiny=DEST, sample=SAMPLE, archive_ext=ARCHIVE_EXT)

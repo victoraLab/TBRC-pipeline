@@ -138,6 +138,11 @@ if (!exists("compute_run_metrics", mode = "function")) {
 }
 
 server <- function(input, output, session) {
+  # The user name as it is used from here on: trimmed. The form check accepts a
+  # name with stray whitespace around it (a pasted name often has some), so the
+  # trimmed value, never the raw one, goes into paths, arguments and sample.json.
+  clean_user_id <- reactive(trimws(input$user_id %||% ""))
+
   storage_server_transfer_mode <- reactive({
     selected_server <- input$server_name
 
@@ -399,14 +404,14 @@ server <- function(input, output, session) {
   submission_row <- reactive({
     # Processing filename and path
     run_name <- current_run_name()
-    source_path <- paste0(input$user_id, "/", run_name)
+    source_path <- paste0(clean_user_id(), "/", run_name)
     
     
       
     # Creating a dataframe with the details of the submission
     data.frame(
-      user_id = input$user_id,
-      user_email = input$email,
+      user_id = clean_user_id(),
+      user_email = trimws(input$email %||% ""),
       # Published so the backend does not have to re-derive it from FASTQ
       # filenames. When the two disagreed, results landed at
       # results/<user>/<folder>/<other-name>/ and were inconsistent run to run.
@@ -459,7 +464,7 @@ server <- function(input, output, session) {
       igblast_db_j = get_cluster_value(servers_config, "igblast_db_j"),
       igblast_data = resolved_igblast_data(),
       igblast_auxiliary_data = resolved_igblast_auxiliary_data(),
-      trim_seq = input$trim_sequence,
+      trim_seq = clean_trim_sequence(input$trim_sequence %||% ""),
       keep_raw = input$keep_intermediate,
       # Separate from keep_raw: keep_raw decides what survives on disk in the
       # run directory, archive_scope decides what is put into the delivered
@@ -627,12 +632,7 @@ server <- function(input, output, session) {
   # was written to prevent. Same bounds as the widgets and as the Snakefile, in
   # one place, and a non-integer counts as out of range because int(float()) on
   # the other side would silently truncate it.
-  MIBS_RANGES <- list(
-    mibs_min_reads_per_well    = c(1, 10000),
-    mibs_min_wells_per_clone   = c(1, 96),
-    mibs_junction_max_distance = c(0, 30),
-    mibs_min_reads_per_cluster = c(1, 1000)
-  )
+  MIBS_RANGES <- MIBS_INPUT_RANGES
 
   mibs_bad_numbers <- function() {
     bad <- character(0)
@@ -880,13 +880,13 @@ server <- function(input, output, session) {
   # builds them: each BC1 name concatenated with each BC2 name, then put through
   # the same canonicaliser the pipeline uses. The two files split the well name
   # differently in every set -- B names columns in BC1 and plate+row in BC2, T
-  # is the other way round, B2, CBC and B_Juhee split it as row+column and plate
-  # -- and the concatenation is the one rule all six obey, because each output
+  # is the other way round, B2 and some others split it as row+column and plate
+  # -- and the concatenation is the one rule every set obeys, because each output
   # file is named after the two barcodes that matched it.
   #
   # The cross product is the point rather than an implementation detail.
-  # Classifying the tokens and multiplying the three vocabularies said LukaP has
-  # sixteen wells; LukaP has four (A03, B04, E01 and G10, on one plate), so a
+  # Classifying the tokens and multiplying the three vocabularies said a four-well set has
+  # sixteen wells; it has four (A03, B04, E01 and G10, on one plate), so a
   # design naming P01A10 passed a check that only asked whether row A and column
   # 10 exist somewhere in the set.
   barcode_geometry <- function(barcode_set) {
@@ -1091,7 +1091,7 @@ server <- function(input, output, session) {
     if (isTRUE(geometry$ok)) {
       # A well key is checked against the set's actual well list rather than
       # against its rows and columns separately, because a barcode set is not
-      # always a full plate: LukaP defines four wells and every one of P01A01 to
+      # always a full plate: a four-well set defines four wells and every one of P01A01 to
       # P01H12 passed a row-and-column check.
       plateless <- well_keys[!grepl("^P", well_keys)]
       # A key with no plate is not a well of the only plate. The well the
@@ -1353,9 +1353,9 @@ server <- function(input, output, session) {
       "-i", gsub("^/+|/+$", "", trimws(input$input_folder %||% "")),
       "-p", input$method %||% "",
       "-b", input$primer %||% "",
-      "-t", if (isTRUE(as.logical(input$trim_primers))) (input$trim_sequence %||% "") else "",
+      "-t", if (isTRUE(as.logical(input$trim_primers))) clean_trim_sequence(input$trim_sequence %||% "") else "",
       "-n", current_run_name() %||% "",
-      "-u", input$user_id %||% ""
+      "-u", clean_user_id()
     ))
     findings <- parse_preflight(result$output)
     # A preflight that cannot run -- or that ran out of time -- must not block a
@@ -1369,38 +1369,6 @@ server <- function(input, output, session) {
         ok = list()))
     }
     findings
-  }
-
-  # timeout_sec bounds the wall clock. Shiny is single threaded, so a script
-  # that blocks does not just delay its own submission -- it freezes the app for
-  # everyone connected. That happened: a preflight integrity check ran `gzip -t`
-  # over multi-gigabyte FASTQs on the NAS and held the process for six minutes.
-  # 0 keeps the old unbounded behaviour for the long-running dispatch scripts,
-  # which are expected to take minutes and have nothing else to block.
-  run_script <- function(script_path, args = character(), timeout_sec = 0) {
-    command_name <- script_path
-    command_args <- args
-
-    if (grepl("\\.bash$", script_path, ignore.case = TRUE)) {
-      command_name <- "bash"
-      command_args <- c(script_path, args)
-    }
-
-    output <- tryCatch(
-      suppressWarnings(system2(command_name, args = command_args, stdout = TRUE,
-                               stderr = TRUE, timeout = timeout_sec)),
-      error = function(e) structure(conditionMessage(e), status = 1)
-    )
-
-    status <- attr(output, "status")
-    if (is.null(status)) {
-      status <- 0
-    }
-
-    list(
-      status = status,
-      output = paste(output, collapse = "\n")
-    )
   }
 
   parse_numeric_marker <- function(output_text, marker_name) {
@@ -1443,8 +1411,8 @@ server <- function(input, output, session) {
   # it, often after its session has gone, when input$ no longer describes it.
   submission_snapshot <- function() {
     list(
-      user_id = input$user_id,
-      email = input$email,
+      user_id = clean_user_id(),
+      email = trimws(input$email %||% ""),
       run_name = current_run_name(),
       input_method = input$type_input,
       server_name = input$server_name,
@@ -1547,7 +1515,7 @@ server <- function(input, output, session) {
 
     if (nzchar(Sys.which("mail"))) {
       output <- tryCatch(
-        suppressWarnings(system2("mail", args = c("-s", subject, recipient), input = body, stdout = TRUE, stderr = TRUE)),
+        suppressWarnings(system2("mail", args = c("-s", shQuote(subject), shQuote(recipient)), input = body, stdout = TRUE, stderr = TRUE)),
         error = function(e) structure(conditionMessage(e), status = 1)
       )
       status <- attr(output, "status")
@@ -1622,53 +1590,65 @@ server <- function(input, output, session) {
     }
 
     finish <- function(status, output) {
-      bytes <- if (is.finite(input_bytes)) input_bytes else parse_numeric_marker(output, "TBRC_INPUT_BYTES")
       label <- if (identical(status, 0L)) "completed" else "failed"
-      append_run_history(
-        status_label = label,
-        runtime_sec = as.numeric(difftime(Sys.time(), started_at, units = "secs")),
-        input_bytes = bytes,
-        backend_output = output,
-        snap = snap
-      )
-      email_result <- send_run_notifications(
-        status_label = label,
-        sample_name = snap$run_name,
-        storage_name = snap$server_name,
-        archive_format = snap$archive_format,
-        submitter_name = snap$user_id,
-        submitter_email = snap$email
-      )
-      # The page, only if the submitter is still on it.
-      if (session$isClosed()) return(invisible())
-      withReactiveDomain(session, isolate({
-        if (identical(label, "failed")) {
-          failure_text <- summarize_backend_failure(
-            output,
-            "The server-side workflow failed. Please check the backend logs."
+      # complete_run() (global.R) runs the three steps in order and does not let
+      # an error in the history or the email stop the page update.
+      complete_run(
+        record_history = function() {
+          bytes <- if (is.finite(input_bytes)) input_bytes else parse_numeric_marker(output, "TBRC_INPUT_BYTES")
+          append_run_history(
+            status_label = label,
+            runtime_sec = as.numeric(difftime(Sys.time(), started_at, units = "secs")),
+            input_bytes = bytes,
+            backend_output = output,
+            snap = snap
           )
-          shinyalert(
-            title = if (grepl("Folder not found on", output, fixed = TRUE)) "Folder not found" else "Submission failed",
-            text = failure_text,
-            type = "error"
+        },
+        send_notifications = function() {
+          send_run_notifications(
+            status_label = label,
+            sample_name = snap$run_name,
+            storage_name = snap$server_name,
+            archive_format = snap$archive_format,
+            submitter_name = snap$user_id,
+            submitter_email = snap$email
           )
-          set_progress_detail(sprintf("Run %s failed.", snap$run_name), failure_text)
-        } else {
-          set_progress_detail(
-            sprintf("Run %s finished.", snap$run_name),
-            "Look for pre-trim and post-trim histograms, plate QC, and the .imgt.ready.fasta file in the result bundle.",
-            sprintf(
-              "If the selected storage server is in pull mode, Synology should fetch the %s archive from the HPC results folder.",
-              snap$archive_format
-            )
-          )
-          pgPaneUpdate("thispg", "workflow", 100)
-          pgPaneUpdate("thispg", "export", 100)
-          if (email_result$user$status != 0 || email_result$admin$status != 0) {
-            set_progress_detail(progress_detail(), "Shiny-side completion email could not be sent.")
-          }
+        },
+        update_page = function(email_result) {
+          # The page, only if the submitter is still on it.
+          if (session$isClosed()) return(invisible())
+          withReactiveDomain(session, isolate({
+            if (identical(label, "failed")) {
+              failure_text <- summarize_backend_failure(
+                output,
+                "The server-side workflow failed. Please check the backend logs."
+              )
+              shinyalert(
+                title = if (grepl("Folder not found on", output, fixed = TRUE)) "Folder not found" else "Submission failed",
+                text = failure_text,
+                type = "error"
+              )
+              set_progress_detail(sprintf("Run %s failed.", snap$run_name), failure_text)
+              # Back to not started, so the stripes on Workflow stop under a "failed" message.
+              pgPaneUpdate("thispg", "workflow", 0)
+            } else {
+              set_progress_detail(
+                sprintf("Run %s finished.", snap$run_name),
+                "Look for pre-trim and post-trim histograms, plate QC, and the .imgt.ready.fasta file in the result bundle.",
+                sprintf(
+                  "If the selected storage server is in pull mode, Synology should fetch the %s archive from the HPC results folder.",
+                  snap$archive_format
+                )
+              )
+              pgPaneUpdate("thispg", "workflow", 100)
+              pgPaneUpdate("thispg", "export", 100)
+              if (email_result$user$status != 0 || email_result$admin$status != 0) {
+                set_progress_detail(progress_detail(), "Shiny-side completion email could not be sent.")
+              }
+            }
+          }))
         }
-      }))
+      )
     }
 
     start_background_script(key, script, cmd_args,
@@ -1817,30 +1797,38 @@ server <- function(input, output, session) {
   
   # Reactive to read content of the selected barcode files
   barcode_content <- reactive({
-    if (!is.null(input$folder_dropdown) && nzchar(input$folder_dropdown)) {
+    # Only a folder that is really in the barcode store. The picker offers
+    # nothing else, but the value comes from the browser, and "../" in it would
+    # have read a BC1.txt from anywhere the app can see.
+    known_folders <- list.dirs(BC_DIR, full.names = FALSE, recursive = FALSE)
+    if (is.character(input$folder_dropdown) && length(input$folder_dropdown) == 1L &&
+        !is.na(input$folder_dropdown) && nzchar(input$folder_dropdown) &&
+        input$folder_dropdown %in% known_folders) {
       folder_path <- file.path(BC_DIR, input$folder_dropdown)
       
-      # Check if both files exist in the selected folder
-      req(file.exists(file.path(folder_path, "BC1.txt")), file.exists(file.path(folder_path, "BC2.txt")))
-      
+      # Check that the folder holds a complete set, Illumina or nanopore
+      preview <- barcode_preview_files(folder_path)
+      req(preview)
+
       list(
-        BC1 = readLines(file.path(folder_path, "BC1.txt"), warn = FALSE),
-        BC2 = readLines(file.path(folder_path, "BC2.txt"), warn = FALSE)
+        BC1 = readLines(preview$paths[1], warn = FALSE),
+        BC2 = readLines(preview$paths[2], warn = FALSE),
+        labels = preview$labels
       )
     } else {
-      list(BC1 = NULL, BC2 = NULL)
+      list(BC1 = NULL, BC2 = NULL, labels = c("Barcode 1:", "Barcode 2:"))
     }
   })
   
   #Render barcode content files in screen
   output$barcode_display1 <- renderText({
     bc <- barcode_content()
-    paste(c("Barcode 1:", bc$BC1), collapse = "\n")
+    paste(c(bc$labels[1], bc$BC1), collapse = "\n")
   })
   
   output$barcode_display2 <- renderText({
     bc <- barcode_content()
-    paste(c("Barcode 2:", bc$BC2), collapse = "\n")
+    paste(c(bc$labels[2], bc$BC2), collapse = "\n")
   })
   
   
@@ -1874,7 +1862,7 @@ server <- function(input, output, session) {
       updateTextInput(
         session,
         inputId = "input_folder",
-        value = "Not used when uploading..."
+        value = UPLOAD_FOLDER_PLACEHOLDER
       )
       app_update_radio_buttons(
         session,
@@ -2182,6 +2170,22 @@ server <- function(input, output, session) {
   
   # Observer to perform actions when the Run button is clicked
   observeEvent(input$run, {
+    # Before anything else, and before any script: every value the form sent is
+    # checked, because Shiny does not enforce what a widget offers and a browser
+    # can send anything for any input. Only values that pass are used below.
+    submitted <- validate_submission(
+      setNames(lapply(SUBMISSION_FIELD_IDS, function(id) input[[id]]), SUBMISSION_FIELD_IDS),
+      submission_choices(server_names, unname(cost_sequencing_choices(servers_config)))
+    )
+    if (!submitted$ok) {
+      shinyalert(
+        title = "Check the form",
+        text = paste(submitted$errors, collapse = "\n"),
+        type = "error"
+      )
+      return()
+    }
+
     if (isTRUE(input$run_clonality) && !isTRUE(input$run_igblast)) {
       shinyalert(
         title = "IGBlast required",
@@ -2347,7 +2351,7 @@ server <- function(input, output, session) {
       r2_index <- which(upload_roles == "R2")[1]
       
       # processing path and creating directory
-      path <- file.path(RUNS_DIR, input$user_id, current_run_name())
+      path <- file.path(RUNS_DIR, clean_user_id(), current_run_name())
       dir.create(path, showWarnings = T, recursive = T)
       
       # Writing the submission metadata on the run folder
@@ -2385,7 +2389,7 @@ server <- function(input, output, session) {
         return()
       }
       cmd_args <- c(
-        "-u", input$user_id,
+        "-u", clean_user_id(),
         "-d", staged_reads[1],
         "-e", staged_reads[2],
         "-n", input$input_files$name[r1_index],
@@ -2445,7 +2449,7 @@ server <- function(input, output, session) {
       )
       # Run progress updates and folder creation code here
       fname <- current_run_name() #folder on server name (Run name)
-      path <- file.path(RUNS_DIR, input$user_id, fname) #full path to the local run
+      path <- file.path(RUNS_DIR, clean_user_id(), fname) #full path to the local run
       dir.create(path, showWarnings = T, recursive = T) #create the folder
       pgPaneUpdate("thispg", "stage", 25)
       pgPaneUpdate("thispg", "stage", 65)
@@ -2477,7 +2481,7 @@ server <- function(input, output, session) {
 
       # Running the pipeline script with arguments
       cmd_args <- c(
-        "-u", input$user_id,
+        "-u", clean_user_id(),
         "-s", input$server_name,
         # Trimmed, and stripped of slashes. The value goes straight into a remote
         # "test -d <base>/<folder>", so a trailing space or a pasted trailing slash

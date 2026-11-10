@@ -1,0 +1,5 @@
+# Nothing in this folder is copied into the images (the app and the workflow are bind-mounted
+# when the container runs), so the build context holds only the Dockerfile. In particular .env,
+# which holds the login hash, is never sent to the Docker daemon.
+*
+!Dockerfile

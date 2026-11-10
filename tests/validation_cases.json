@@ -1,0 +1,100 @@
+{
+  "path_segment": {
+    "good": [
+      "RUN15",
+      "RG-78",
+      "AV_2024305_SingleGC_ET_2.3",
+      "1_AB02072024",
+      "runs.backup",
+      "231003_M03851_0285_000000000-DLPWD"
+    ],
+    "bad": [
+      "",
+      ".",
+      "..",
+      "-x",
+      "a b",
+      "a/b",
+      "a;b",
+      "$(x)",
+      "`x`",
+      "a'b",
+      "a\"b",
+      "a|b",
+      "a&b",
+      "a\nb",
+      "caf\u00e9",
+      "\uff11\uff12"
+    ],
+    "bad_untrimmed": [
+      "a\n",
+      " a"
+    ]
+  },
+  "trim_sequence": {
+    "good": [
+      "GGGAATTCGAGGTGCAGCTGCAGGAGTCTGG",
+      "CCAGGGTTTTCCCAGTCACGAC",
+      "ACGTRYSWKM"
+    ],
+    "bad": [
+      "ACGTACGTA",
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "ACGTACGTAX",
+      "ACGT ACGT AC",
+      "ACGTACGTAC;touch x"
+    ]
+  },
+  "method": {
+    "good": [
+      "classic_luka",
+      "tiago_vsearch",
+      "tiago_nanopore",
+      "tiago_sulkseq"
+    ],
+    "bad": [
+      "",
+      "classic_luka ",
+      "classic_luka\n",
+      "CLASSIC_LUKA",
+      "classic",
+      "classic_luka;touch x",
+      "$(touch canary)"
+    ]
+  },
+  "hostile": [
+    "; touch canary",
+    "$(touch canary)",
+    "`touch canary`",
+    "\n touch canary",
+    "' ; touch canary ; '",
+    "\" ; touch canary ; \"",
+    "../../etc/passwd",
+    "--delete"
+  ],
+  "email": {
+    "good": [
+      "a@b.co",
+      "first.last+tag@lab.example.org",
+      "x_y%z@a-b.example.com",
+      "a-b@c.co",
+      "_a@b.co",
+      "tiago@example.org"
+    ],
+    "bad": [
+      "-a@b.co",
+      "-@b.co",
+      "--delete@b.co",
+      "-o/tmp/x@b.co",
+      "-a-b@c.co",
+      "a b@c.co",
+      "a@b",
+      "a@b.c",
+      "'a@b.co",
+      "a@b.co;x",
+      "$(x)@b.co",
+      "a@b.co\nBcc: x@y.co",
+      "caf\u00e9@example.org"
+    ]
+  }
+}

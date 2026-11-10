@@ -102,12 +102,17 @@ if [[ "${LOCAL_RUN}" == "1" ]]; then
 fi
 
 require_tool ssh
-rsync -a -P "${RUNS_DIR}/${USER_ID}" "${DTN_HOST}:${PIPELINE_ROOT}/data/runs/"
+rsync -a -P "${RUNS_DIR}/${USER_ID}" "${DTN_HOST}:$(cluster_path "data/runs/")"
 
 # Every value is quoted with shq() (printf %q) rather than wrapped in literal
 # single quotes, so nothing a value contains can end its own quoting.
 # Own working directory per run, as in goServer.bash, so concurrent
 # submissions do not refuse each other; started detached, so the run survives
-# this connection.
-dispatch_detached "${SSH_HOST}" "${PIPELINE_ROOT}" "${PATH_PREFIX}" "${SNAKEMAKE_ENV}" \
-  "${RUN_KEY}" "${DATA_TABLE}" "${INPUTPATH}"
+# this connection. With the cluster gate on (cluster.use_gate) nothing is
+# composed or quoted here: the launch is a named action (dispatch_via_gate).
+if gate_enabled; then
+  dispatch_via_gate "${SSH_HOST}" "${USER_ID}" "${RUN_NAME}"
+else
+  dispatch_detached "${SSH_HOST}" "${PIPELINE_ROOT}" "${PATH_PREFIX}" "${SNAKEMAKE_ENV}" \
+    "${RUN_KEY}" "${DATA_TABLE}" "${INPUTPATH}"
+fi

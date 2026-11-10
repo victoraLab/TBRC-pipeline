@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """tbrc -- run the TBRC pipeline from a terminal, without the Shiny app.
 
+    ./tbrc setup                      ask a few questions, write the configuration, check it
     ./tbrc check                      is everything reachable and set up?
     ./tbrc run   ...                  submit a run (to the HPC, or locally)
     ./tbrc test                       does the workflow still build?
@@ -9,17 +10,20 @@
 Everything the app knows comes from frontend/server_config.json; this reads the
 same file, writes the same sample.json the app writes, and launches the backend
 through the same scripts, so a run started here is indistinguishable to the
-workflow from one started in the browser. Python 3.8+, standard library only.
+workflow from one started in the browser. Python 3.9 or newer, standard library only.
 """
 import argparse
 import datetime
+import getpass
 import glob
 import gzip
+import importlib.util
 import json
 import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -138,9 +142,93 @@ def validate_segment(value, label):
     return value
 
 
+# ---------------------------------------------------------------- the workflow's own checks
+# sample.json column -> the option (or config entry) that sets it, for the hint under a refusal.
+FIELD_SOURCES = {
+    "user_id": "--user", "user_email": "--email", "sample_name": "--run-name", "source": "--user, --run-name",
+    "dest": "--user, --run-name", "server_name": "--server", "primer_set": "--primer-set",
+    "trim_seq": "--trim-seq (or --no-trim-primers, which leaves it empty)", "trim_primers": "--no-trim-primers",
+    "sequence_number": "--contigs, which takes 1 to 500 (the field is twice it)",
+    "pipeline": "--pipeline", "luka_light_protocol": "--protocol", "run_igblast": "--no-igblast",
+    "run_clonality": "--clonality", "archive_format": "--archive-format", "archive_scope": "--archive-scope",
+    "igblast_species": "--species", "igblast_organism": "--species", "igblast_panel": "--panel",
+    "receptor_check": "--receptor-check", "run_group": "--run-group", "sequencing_kit": "--sequencing-kit",
+    "keep_raw": "--keep-raw", "server_transfer_mode": "--transfer-mode", "platemap_attached": "--platemap",
+    "server_path": "the storage server's rawdata_path in frontend/server_config.json",
+    "server_results_path": "the storage server's results_path in frontend/server_config.json",
+    "server_ssh_port": "the storage server's ssh_port in frontend/server_config.json",
+}
+for _key in ("mibs_junction_max_distance", "mibs_gene_grouping", "mibs_clone_scope", "mibs_min_reads_per_well",
+             "mibs_min_wells_per_clone", "mibs_productive_only", "mibs_min_reads_per_cluster"):
+    FIELD_SOURCES[_key] = "--" + _key.replace("_", "-")
+for _key in ("igblast_bin", "igblast_data", "igblast_auxiliary_data", "igblast_db_v", "igblast_db_d", "igblast_db_j"):
+    FIELD_SOURCES[_key] = "cluster." + _key + " in frontend/server_config.json"
+
+
+def load_sample_rules():
+    """backend/workflow/sample_rules.py, the module the Snakefile runs on every row of sample.json,
+    loaded by path. Plain standard library, so it also imports here under Python 3.9."""
+    path = os.path.join(BACKEND, "workflow", "sample_rules.py")
+    if not os.path.isfile(path):
+        raise Fail("cannot find {}".format(os.path.relpath(path, ROOT)),
+                   "tbrc checks a run against the workflow's own rules, which live there; run it from a full checkout.")
+    spec = importlib.util.spec_from_file_location("tbrc_sample_rules", path)
+    module = importlib.util.module_from_spec(spec)
+    keep = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True  # no .pyc left beside the workflow code
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = keep
+    return module
+
+
+_RULES = {}
+
+
+def sample_rules_module():
+    """load_sample_rules(), once per backend folder."""
+    path = os.path.join(BACKEND, "workflow", "sample_rules.py")
+    if path not in _RULES:
+        _RULES[path] = load_sample_rules()
+    return _RULES[path]
+
+
+def check_sample_rules(sample, run_name):
+    """Apply the checks the Snakefile applies at load time to `sample`, before anything is staged or
+    sent, and stop with the same message, which names each field and never repeats its value.
+
+    The workflow sees the row as data/runs/<user>/<run>/sample.json on whichever machine runs it, so
+    that is the table path to check it against. The trusted list is this checkout's, if it has one:
+    a cluster with the list switched on is sent a copy of it by scripts/deploy_all.sh."""
+    if not os.path.isfile(os.path.join(BACKEND, "workflow", "sample_rules.py")):
+        # A copy of tbrc with only a config beside it (how the launcher tests run it) can still send a run:
+        # the workflow checks the same rules when it loads sample.json, so this is a courtesy, not the gate.
+        print("note: backend/workflow/sample_rules.py is not here, so this sample.json was not checked before "
+              "sending; the workflow checks it again when it loads it.", file=sys.stderr)
+        return
+    rules = sample_rules_module()
+    table = "data/runs/{}/{}/sample.json".format(sample["user_id"], run_name)
+    try:
+        trusted = rules.load_trusted(os.path.join(BACKEND, "config", "trusted_servers.json"))
+        rules.validate_sample(sample, trusted)
+        rules.validate_run_folder([sample], table)
+        rules.validate_sample_name(run_name)
+    except rules.SampleRejected as err:
+        fields = []
+        for problem in err.problems:
+            field = problem.split(":", 1)[0].strip()
+            if field in FIELD_SOURCES and field not in fields:
+                fields.append(field)
+        where = "; ".join("{} comes from {}".format(f, FIELD_SOURCES[f]) for f in fields)
+        raise Fail(str(err), "the workflow applies the same rules when it loads sample.json."
+                   + (" Fix: {}.".format(where) if where else ""))
+
+
 # ---------------------------------------------------------------- shell
-def run(cmd, cwd=None, env=None, stream=False, timeout=None, log=None):
-    """Run a command. stream=True copies output to the terminal (and to log) as it arrives."""
+def run(cmd, cwd=None, env=None, stream=False, timeout=None, log=None, stdin=None):
+    """Run a command. stream=True copies output to the terminal (and to log) as it arrives.
+    stdin is text sent to the command's standard input (never put a secret on a command line)."""
     if stream:
         proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -155,7 +243,7 @@ def run(cmd, cwd=None, env=None, stream=False, timeout=None, log=None):
         proc.wait()
         return proc.returncode, "".join(lines), ""
     try:
-        proc = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout, input=stdin)
     except subprocess.TimeoutExpired:
         return 124, "", "timed out after {}s".format(timeout)
     except OSError as exc:
@@ -180,13 +268,20 @@ def which(tool):
     return shutil.which(tool) is not None
 
 
-def docker_image():
+def docker_installed_images():
+    """The repository:tag of every image Docker has, or None when Docker is not installed or not answering."""
     if not which("docker"):
         return None
     rc, out, _ = run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"], timeout=30)
     if rc != 0:
         return None
-    have = set(out.split())
+    return set(out.split())
+
+
+def docker_image():
+    have = docker_installed_images()
+    if not have:
+        return None
     for image in DOCKER_IMAGES:
         if image in have:
             return image
@@ -314,9 +409,11 @@ def cmd_check(a):
             report("ok", "pipeline tools", "not on PATH, but Docker image {} is available".format(image))
         else:
             report("fail", "pipeline tools", "missing: " + ", ".join(missing),
-                   "conda env create -f environment.yml && conda activate snakemake, or build the backend Docker image from the README")
+                   "conda env create -f environment.yml && conda activate snakemake, or build the Docker image "
+                   "(./tbrc setup --build-images, or docker build --target backend -t tbrc-backend:arm64 deploy/docker).")
         if which("docker") and not image:
-            report("warn", "docker", "installed, but no tbrc-backend image", "see the README")
+            report("warn", "docker", "installed, but no tbrc-backend image",
+                   "build it: ./tbrc setup --build-images, or docker build --target backend -t tbrc-backend:arm64 deploy/docker")
         igb = os.path.join(BACKEND, "igblast")
         have_internal = os.path.isdir(os.path.join(igb, "internal_data"))
         report("ok" if have_internal else "warn", "IgBLAST internal_data in backend/igblast",
@@ -395,6 +492,9 @@ def cmd_check(a):
         say("== storage servers")
         servers = cfg.get("storage_server") or {}
         names = [a.server] if a.server else sorted(servers)
+        if getattr(a, "no_storage", False):
+            names = []
+            report("skip", "storage servers", "not checked: raw data comes in as uploads or with --fastq-dir")
         for name in names:
             try:
                 entry = storage_entry(cfg, name)
@@ -471,7 +571,8 @@ def local_runner(a):
     if image:
         return "docker", image
     raise Fail("no way to run the workflow on this machine: snakemake is not on PATH and no tbrc-backend Docker image exists",
-               "conda env create -f environment.yml && conda activate snakemake, or build the backend Docker image, or drop --local to run on the HPC.")
+               "conda env create -f environment.yml && conda activate snakemake, or build the image "
+               "(docker build --target backend -t tbrc-backend:arm64 deploy/docker), or drop --local to run on the HPC.")
 
 
 def cmd_run(a):
@@ -527,6 +628,9 @@ def cmd_run(a):
         a.transfer_mode = "pull"
 
     sample = build_sample(cfg, a, run_name, storage, a.server or "")
+    # Before a run folder is made, a FASTQ copied or a machine reached: the workflow refuses a sample.json
+    # with a bad value when it loads, which used to be after all of that.
+    check_sample_rules(sample, run_name)
     run_dir = os.path.join(BACKEND, "data", "runs", a.user, run_name) if a.local \
         else os.path.join(RUNS_DIR, a.user, run_name)
     if os.path.isdir(run_dir) and os.listdir(run_dir) and not a.force:
@@ -625,7 +729,9 @@ def cmd_run(a):
         if has_server:
             script = os.path.join(FRONTEND, "scripts", "goServer.bash")
             cmd = ["bash", script, "-u", a.user, "-s", a.server, "-f", a.folder, "-n", run_name]
-            env = dict(os.environ, TBRC_RUNS_DIR=RUNS_DIR)
+            # This script reaches the cluster and the storage server with the user's own ssh key. The
+            # cluster gate (cluster.use_gate) covers only the web app's key, so ask for the commands.
+            env = dict(os.environ, TBRC_RUNS_DIR=RUNS_DIR, TBRC_USE_GATE="0")
             if ssh_user(cfg):
                 env["TBRC_SSH_USER"] = ssh_user(cfg)
             say("Dispatching {} on {} (raw data {}:{}) ...".format(run_name, ssh_host, a.server, a.folder))
@@ -728,6 +834,9 @@ def cmd_test(a):
 
     say("== 2. the workflow plans a run from that sample.json (dry run, no data needed)")
     pipelines = ["tiago_vsearch", "classic_luka"]
+    # Each dry-run table sits in data/runs/tbrc_test/<name>_<pipeline>/, and the row is built for that
+    # same run name: the workflow refuses a sample.json whose dest and source name another run
+    # (backend/workflow/sample_rules.py, validate_run_folder).
     name = "_tbrc_selftest_{}".format(datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
     where = "local" if (which("snakemake") or docker_image()) and not a.hpc else "hpc"
     if where == "local":
@@ -738,7 +847,7 @@ def cmd_test(a):
             tiny_fastq(os.path.join(run_dir, "selftest_S1_R1_001.fastq.gz"))
             tiny_fastq(os.path.join(run_dir, "selftest_S1_R2_001.fastq.gz"))
             fake.pipeline = pipeline
-            write_sample(run_dir, build_sample(cfg, fake, "selftest"))
+            write_sample(run_dir, build_sample(cfg, fake, name + "_" + pipeline))
             table = os.path.relpath(os.path.join(run_dir, "sample.json"), BACKEND)
             inputs = os.path.relpath(run_dir, BACKEND) + "/"
             snake = ["snakemake", "-n", "--cores", "1"]
@@ -767,7 +876,7 @@ def cmd_test(a):
                     tiny_fastq(os.path.join(local_dir, "selftest_S1_R1_001.fastq.gz"))
                     tiny_fastq(os.path.join(local_dir, "selftest_S1_R2_001.fastq.gz"))
                     fake.pipeline = pipeline
-                    write_sample(local_dir, build_sample(cfg, fake, "selftest"))
+                    write_sample(local_dir, build_sample(cfg, fake, name + "_" + pipeline))
                 remote_dir = "{}/data/runs/tbrc_test/".format(root.rstrip("/"))
                 rc, out, err = run(["rsync", "-a", "-e", "ssh " + " ".join(SSH_OPTS), tmp + "/", ssh_host + ":" + remote_dir], timeout=120)
                 if rc != 0:
@@ -811,6 +920,912 @@ def cmd_test(a):
         return 1
     say("All tests passed.")
     return 0
+
+
+# ---------------------------------------------------------------- setup
+# `tbrc setup` asks a few plain questions, one at a time, and writes what a new installation needs:
+# frontend/server_config.json (from the example), the SLURM account and partition for a cluster, and
+# the web app's login (deploy/docker/.env, from deploy/docker/env.example). It builds the Docker
+# images that are missing and starts the web app. Every answer is checked by rules of the kind the
+# workflow applies to sample.json (names and paths go through backend/workflow/sample_rules.py) and
+# asked again when it fails; nothing typed reaches a shell, only argument lists.
+SETUP_ANSWERS = ("runs_on", "data", "server_name", "server_raw", "server_results", "server_port", "interface",
+                 "audience", "login_host", "dtn_host", "backend_path", "conda_env", "conda_path",
+                 "slurm_account", "slurm_partition", "password", "password_hash", "test_data")
+BCRYPT_RE = re.compile(r"\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}")
+_NAME = r"[A-Za-z0-9_][A-Za-z0-9._-]*"
+_HOST = r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?"
+LOGIN_RE = re.compile(r"(?:{n}@)?{h}".format(n=_NAME, h=_HOST))
+REMOTE_RE = re.compile(r"({n})@({h}):(/\S*)".format(n=_NAME, h=_HOST))
+NAME_RE = re.compile(_NAME)
+FOLDER_RE = re.compile(r"/[A-Za-z0-9._/+-]*")
+# the panels `tbrc check --local` and the test library need, as (species, panel)
+IGBLAST_PANELS = (("mouse", "ig_all"), ("mouse", "tcr_all"), ("human", "ig_all"), ("human", "tcr_all"))
+# The IgBLAST database build, run in the backend image: IgBLAST's data, the other species' auxiliary
+# files, every panel, and a one-line check per panel. A constant, with nothing typed in it.
+IGBLAST_BUILD = ("cp -r /opt/conda/share/igblast/internal_data . "
+                 "&& cp --update=none /opt/conda/share/igblast/optional_file/*_gl.aux optional_file/ "
+                 "&& ./setup_igblast_databases.sh all all "
+                 '&& for p in "mouse ig_all" "mouse tcr_all" "human ig_all" "human tcr_all"; '
+                 "do bash check_igblast_setup.sh $p | tail -1; done")
+# The images deploy/docker/Dockerfile builds, under the names tbrc and docker-compose.yml look for.
+# The arm64 tag records the one architecture they have been built and run on (not tested on Linux or Intel).
+SETUP_BACKEND_IMAGE = "tbrc-backend:arm64"    # --target backend; the first name DOCKER_IMAGES lists
+SETUP_UNIFIED_IMAGE = "tbrc-unified:arm64"    # --target unified; what docker-compose.yml runs
+BUILD_TIME = "about 15 minutes"
+HASH_COMMAND = ["docker", "run", "--rm", "-i", "caddy:2-alpine", "caddy", "hash-password"]
+TEST_LIBRARY = ["--user", "setup_test", "--run-name", "TCRb_mini", "--primer-set", "T", "--pipeline", "tiago_vsearch",
+                "--species", "mouse", "--panel", "trb", "--clonality"]
+PATH_PREFIX_TAIL = "/usr/local/bin:/usr/bin"
+# Under backend/, where the web container may write (docker-compose.yml mounts the rest read-only): the run
+# folder, the results, and the per-run working directories that backend/run_isolated.sh makes.
+WEB_WRITABLE_FOLDERS = ("data/runs", "results", ".parallel")
+
+
+SETUP_WRITTEN = []      # the files this run of setup has written, for the message after an error or Ctrl-C
+
+
+def timestamp():
+    return datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+# -- the checks: each takes the text of an answer and returns the value to keep, or raises ValueError
+def check_choice(*options):
+    """options: (value, word, ...) in the order the menu lists them. The number or any word picks one."""
+    def check(text):
+        said = text.strip().lower()
+        for number, option in enumerate(options, 1):
+            if said == str(number) or said in option:
+                return option[0]
+        raise ValueError("answer {}, or one of: {}".format(
+            " or ".join(str(n) for n in range(1, len(options) + 1)), ", ".join(o[0] for o in options)))
+    return check
+
+
+def check_segment(text):
+    if not sample_rules_module()._segment_ok(text):
+        raise ValueError("use one word of letters, digits, dot, underscore or hyphen (no spaces, "
+                         "not starting with a hyphen)")
+    return text
+
+
+def check_server_name(text):
+    check_segment(text)
+    if text.lower() in ("local", "upload") or len(text) > 40:
+        raise ValueError("pick another name: not 'local' or 'upload', and at most 40 characters")
+    return text
+
+
+def check_login(text):
+    if len(text) > 300 or ".." in text or LOGIN_RE.fullmatch(text) is None:
+        raise ValueError("write a host name, or user@host: letters, digits, dots and hyphens, no spaces, "
+                         "not starting with a hyphen")
+    return text
+
+
+def check_login_or_blank(text):
+    return check_login(text) if text else ""
+
+
+def check_remote_path(text):
+    """user@host:/folder/ in the plain-path alphabet of the workflow (no spaces, no .., no ~)."""
+    match = REMOTE_RE.fullmatch(text)
+    if (match is None or not match.group(3).strip("/") or ".." in match.group(2)
+            or not sample_rules_module()._path_ok(text)):
+        raise ValueError("write it as user@host:/folder/ using letters, digits and . _ / @ : + - only "
+                         "(no spaces, no .., no ~)")
+    return text if text.endswith("/") else text + "/"
+
+
+def check_port(text):
+    if re.fullmatch(r"[0-9]{1,5}", text) is None or not 0 < int(text) < 65536:
+        raise ValueError("write a port number from 1 to 65535")
+    return int(text)
+
+
+def check_folder(text):
+    """An absolute folder on another machine, in the plain-path alphabet."""
+    if (FOLDER_RE.fullmatch(text) is None or not text.strip("/") or "//" in text
+            or not sample_rules_module()._path_ok(text)):
+        raise ValueError("write an absolute path using letters, digits and . _ / + - only (no spaces, no .., no ~)")
+    return text.rstrip("/")
+
+
+def check_folder_or_blank(text):
+    return check_folder(text) if text else ""
+
+
+def check_slurm_account(text):
+    if text and NAME_RE.fullmatch(text) is None:
+        raise ValueError("write a SLURM account name (letters, digits, dot, underscore, hyphen), or leave it blank")
+    return text
+
+
+def check_slurm_partition(text):
+    names = text.split(",")
+    if not text or any(NAME_RE.fullmatch(n) is None for n in names):
+        raise ValueError("write a partition name (letters, digits, dot, underscore, hyphen); a comma-separated "
+                         "list is fine")
+    return text
+
+
+def check_test_folder(text):
+    if not text:
+        return ""
+    folder = os.path.abspath(os.path.expanduser(text))
+    if not os.path.isdir(folder):
+        raise ValueError("that is not a folder")
+    return folder
+
+
+def check_password(text):
+    if len(text) < 8 or any(c in text for c in "\r\n\0"):
+        raise ValueError("use at least 8 characters, on one line")
+    if len(text.encode("utf-8")) > 72:
+        raise ValueError("use at most 72 bytes: bcrypt, which protects the login, cannot take more "
+                         "(accented letters and emoji count as 2 to 4 bytes each)")
+    return text
+
+
+# -- asking
+class Asker:
+    """The setup questions, one at a time: on the terminal (a bad answer is asked again) or from an
+    --answers file (a bad answer is refused, naming the key, since nobody is there to ask)."""
+
+    def __init__(self, given=None):
+        self.given = given
+
+    @property
+    def interactive(self):
+        return self.given is None
+
+    def ask(self, key, question, check, menu=(), default=None, optional=False):
+        if self.given is not None:
+            raw = self.given.get(key)
+            if raw is None or (isinstance(raw, str) and raw == "" and default is not None):
+                if default is not None:
+                    raw = default
+                elif optional:
+                    raw = ""
+                else:
+                    raise Fail("answers file: {} is missing".format(key), "it is one of: " + ", ".join(SETUP_ANSWERS))
+            if isinstance(raw, bool) or not isinstance(raw, (str, int)):
+                raise Fail("answers file: {} must be text or a number".format(key))
+            try:
+                return check(str(raw))
+            except ValueError as exc:
+                raise Fail("answers file: {}: {}".format(key, exc))
+        shown = question + "".join("\n" + line for line in menu)
+        if default is not None:
+            shown += "\n(press Enter for {})".format(default)
+        elif optional:
+            shown += "\n(press Enter to skip)"
+        while True:
+            try:
+                typed = input("\n" + shown + "\n> ").strip()
+            except EOFError:
+                raise Fail("the input ended before every question was answered", "nothing was changed.")
+            if typed == "" and default is not None:
+                typed = str(default)
+            try:
+                return check(typed)
+            except ValueError as exc:
+                say("  Not accepted: {}. Please try again.".format(exc))
+
+    def confirm(self, question, default=False):
+        while True:
+            try:
+                typed = input("\n" + question + (" [Y/n] " if default else " [y/N] ")).strip().lower()
+            except EOFError:
+                raise Fail("the input ended before every question was answered", "nothing was changed.")
+            if typed == "":
+                return default
+            if typed in ("n", "no"):
+                return False
+            if typed in ("y", "yes"):
+                return True
+            say("  Please answer y or n.")
+
+    def password(self):
+        """('plain', password) or ('hash', bcrypt hash)."""
+        if self.given is not None:
+            hashed = self.given.get("password_hash")
+            if hashed:
+                if not isinstance(hashed, str) or BCRYPT_RE.fullmatch(hashed) is None:
+                    raise Fail("answers file: password_hash is not a bcrypt hash",
+                               "make one with: docker run --rm -i caddy:2-alpine caddy hash-password")
+                return "hash", hashed
+            plain = self.given.get("password")
+            if plain is None or plain == "":
+                raise Fail("answers file: password is missing",
+                           "the web app always needs a password; give password, or password_hash")
+            if not isinstance(plain, str):
+                raise Fail("answers file: password must be text")
+            try:
+                return "plain", check_password(plain)
+            except ValueError as exc:
+                raise Fail("answers file: password: {}".format(exc))
+        while True:
+            try:
+                first = getpass.getpass("\nChoose a password for the web app (hidden, at least 8 characters): ")
+                second = getpass.getpass("Type it again: ")
+            except EOFError:
+                raise Fail("the input ended before every question was answered", "nothing was changed.")
+            if first != second:
+                say("  The two passwords differ. Please try again.")
+                continue
+            try:
+                return "plain", check_password(first)
+            except ValueError as exc:
+                say("  Not accepted: {}. Please try again.".format(exc))
+
+
+def load_answers(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except OSError as exc:
+        raise Fail("cannot read the answers file {}: {}".format(path, exc.strerror or exc))
+    except ValueError as exc:
+        raise Fail("the answers file {} is not valid JSON: {}".format(path, exc))
+    if not isinstance(data, dict):
+        raise Fail("the answers file {} must hold one JSON object".format(path))
+    unknown = sorted(k for k in data if k not in SETUP_ANSWERS)
+    if unknown:
+        raise Fail("answers file: unknown answer(s): {}".format(", ".join(unknown)),
+                   "the names are: " + ", ".join(SETUP_ANSWERS))
+    return data
+
+
+def collect_setup_answers(asker, test_data):
+    """The answers to the four questions and to the cluster ones, validated. `test_data` is the folder
+    from --test-data, or None to ask."""
+    ans = {}
+    ans["runs_on"] = asker.ask(
+        "runs_on", "Will your runs happen on this computer, or on a cluster?",
+        check_choice(("local", "this", "this computer", "computer", "here"),
+                     ("cluster", "a cluster", "hpc", "slurm")),
+        menu=["  1) on this computer",
+              "  2) on a cluster (a shared system you log in to over SSH; it runs the jobs with SLURM)"])
+    ans["data"] = asker.ask(
+        "data", "Where is your raw data?",
+        check_choice(("upload", "uploaded", "app", "this computer"), ("server", "file server", "ssh")),
+        menu=["  1) on this computer: I upload it through the app, or give tbrc a folder",
+              "  2) on a file server I reach over SSH"])
+    if ans["data"] == "server":
+        ans["server_name"] = asker.ask(
+            "server_name", "Give that file server a short name, for example labnas (letters, digits, . _ -):",
+            check_server_name)
+        ans["server_raw"] = asker.ask(
+            "server_raw", "Where does the raw data live on it? Write it as user@host:/folder/ :", check_remote_path)
+        ans["server_results"] = asker.ask(
+            "server_results", "Where should finished results go on it? Write it as user@host:/folder/ :",
+            check_remote_path)
+        ans["server_port"] = asker.ask("server_port", "SSH port of that file server:", check_port, default="22")
+    ans["interface"] = asker.ask(
+        "interface", "Do you want to work in the terminal only, or use the web app too?",
+        check_choice(("terminal", "terminal only", "shell"), ("web", "web app", "app", "browser")),
+        menu=["  1) the terminal only", "  2) the web app"])
+    if ans["interface"] == "web":
+        ans["audience"] = asker.ask(
+            "audience", "Who will open the web app?",
+            check_choice(("me", "only me", "this computer", "me only"), ("lab", "the whole lab", "everyone", "network")),
+            menu=["  1) only me, on this computer",
+                  "  2) the whole lab, over the network (served over plain HTTP, with one shared password for everyone;"
+                  " a note follows)"])
+    if ans["runs_on"] == "cluster":
+        ans["login_host"] = asker.ask(
+            "login_host", "Login host of the cluster, as you type it after ssh (host or user@host):", check_login)
+        ans["dtn_host"] = asker.ask(
+            "dtn_host", "Data-transfer host of the cluster (host or user@host):", check_login_or_blank, optional=True)
+        ans["backend_path"] = asker.ask(
+            "backend_path", "Folder on the cluster that holds (or will hold) the backend, the one with "
+            "snakemake.sh in it. Write the absolute path:", check_folder)
+        ans["conda_env"] = asker.ask(
+            "conda_env", "Name of the conda environment on the cluster:", check_segment, default="snakemake")
+        ans["conda_path"] = asker.ask(
+            "conda_path", "Folder on the cluster that holds the conda command (usually .../miniforge3/condabin):",
+            check_folder_or_blank, optional=True)
+        ans["slurm_account"] = asker.ask(
+            "slurm_account", "SLURM account to charge:", check_slurm_account, optional=True)
+        ans["slurm_partition"] = asker.ask(
+            "slurm_partition", "SLURM partition to use:", check_slurm_partition)
+    if test_data is None:
+        ans["test_data"] = asker.ask(
+            "test_data", "Folder with a small test library (one R1 and one R2 FASTQ) to run as a first test:",
+            check_test_folder, optional=True)
+    else:
+        try:
+            ans["test_data"] = check_test_folder(test_data)
+        except ValueError as exc:
+            raise Fail("--test-data: {}".format(exc))
+    return ans
+
+
+# -- what gets written
+def build_server_config(template, ans):
+    """The example config with the answers filled in. A run on this computer is never "push": a
+    local run would try to copy its archive to the file server, and be recorded as failed. The launch
+    gate (cluster.use_gate) is lab-specific and is never set."""
+    cfg = json.loads(json.dumps(template))
+    cluster = cfg.setdefault("cluster", {})
+    cluster.pop("use_gate", None)
+    local = ans["runs_on"] == "local"
+    if ans["data"] == "server":
+        cfg["storage_server"] = {ans["server_name"]: {
+            "rawdata_path": ans["server_raw"], "results_path": ans["server_results"],
+            "ssh_port": ans["server_port"], "web_port": 0, "transfer_mode": "pull" if local else "push"}}
+    else:
+        # the app lists at least one server; with no real one the archive stays where it was made
+        for entry in (cfg.get("storage_server") or {}).values():
+            if isinstance(entry, dict):
+                entry["transfer_mode"] = "pull"
+    if not local:
+        root = ans["backend_path"]
+        cluster.update({"ssh_host": ans["login_host"], "dtn_host": ans["dtn_host"], "pipeline_root": root,
+                        "snakemake_env": ans["conda_env"], "igblast_data": root + "/igblast/internal_data",
+                        "igblast_auxiliary_data": root + "/igblast/optional_file"})
+        if ans["conda_path"]:
+            cluster["path_prefix"] = ans["conda_path"] + ":" + PATH_PREFIX_TAIL
+    return cfg
+
+
+def build_cluster_json(text, ans):
+    try:
+        data = json.loads(text)
+        default = data.setdefault("__default__", {})
+    except (ValueError, AttributeError):
+        raise Fail("backend/config/cluster.json is not a JSON object with a __default__ section")
+    default["account"] = ans["slurm_account"]
+    default["partition"] = ans["slurm_partition"]
+    return json.dumps(data, indent=4) + "\n"
+
+
+def build_env(example, bind, env_hash):
+    """env.example with the login hash and the address to listen on filled in. The hash is written with
+    every $ doubled, because compose expands $ in .env values."""
+    lines, seen = [], set()
+    for line in example.splitlines():
+        key = line.split("=", 1)[0] if re.match(r"[A-Z_]+=", line) else None
+        if key == "TBRC_PASSWORD_HASH":
+            line = "TBRC_PASSWORD_HASH=" + env_hash
+        elif key == "TBRC_BIND":
+            line = "TBRC_BIND=" + bind
+        if key:
+            seen.add(key)
+        lines.append(line)
+    if "TBRC_PASSWORD_HASH" not in seen:
+        lines.append("TBRC_PASSWORD_HASH=" + env_hash)
+    if "TBRC_BIND" not in seen:
+        lines.append("TBRC_BIND=" + bind)
+    return "\n".join(lines) + "\n"
+
+
+def hash_password(password):
+    """The bcrypt hash caddy makes. The password goes in on standard input, never on a command line."""
+    rc, out, err = run(HASH_COMMAND, stdin=password + "\n", timeout=300)
+    hashed = out.strip()
+    if rc != 0 or BCRYPT_RE.fullmatch(hashed) is None:
+        detail = (err or "").replace(password, "***").strip().splitlines()
+        raise Fail("could not make the password hash (caddy hash-password exited {})".format(rc),
+                   "Docker has to be running, and the image caddy:2-alpine is downloaded the first time, which "
+                   "needs internet. Nothing was changed." + (" Docker said: " + detail[-1] if detail else ""))
+    return hashed
+
+
+def write_file(path, text, private, stamp):
+    """Write `text` to `path` through a new file beside it. An existing file is copied to
+    <path>.bak-<stamp> first (never overwriting an older backup); returns the backup's path or None."""
+    backup = None
+    if os.path.exists(path):
+        backup = "{}.bak-{}".format(path, stamp)
+        number = 1
+        while os.path.exists(backup):
+            backup = "{}.bak-{}-{}".format(path, stamp, number)
+            number += 1
+        if private:
+            # created with mode 600 from the start: a copy made at the umask default would be readable by
+            # others for a moment, and it holds the old login hash
+            fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as copy, open(path, "rb") as original:
+                shutil.copyfileobj(original, copy)
+        else:
+            shutil.copy2(path, backup)
+        mode = 0o600 if private else stat_mode(path)
+    else:
+        mode = 0o600 if private else 0o644
+    tmp = "{}.new{}".format(path, os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    return backup
+
+
+def stat_mode(path):
+    return os.stat(path).st_mode & 0o777
+
+
+def rel_path(path):
+    return os.path.relpath(path, ROOT)
+
+
+# -- what gets run
+def igblast_built():
+    work = os.path.join(BACKEND, "igblast", "work")
+    return os.path.isdir(os.path.join(BACKEND, "igblast", "internal_data")) and all(
+        glob.glob(os.path.join(work, species, panel, "*_V.nhr")) for species, panel in IGBLAST_PANELS)
+
+
+def igblast_command(image):
+    return ["docker", "run", "--rm", "-v", "{}:/work".format(BACKEND), "-w", "/work/igblast", image,
+            "bash", "-c", IGBLAST_BUILD]
+
+
+def build_igblast():
+    """Build the IgBLAST databases in the Docker image, unless they are built. True unless it failed."""
+    if igblast_built():
+        status("skip", "IgBLAST databases", "already built (mouse and human, Ig and TCR panels)")
+        return True
+    image = docker_image()
+    if not image:
+        status("warn", "IgBLAST databases", "not built: no tbrc-backend Docker image is available",
+               "build the image ({}): ./tbrc setup --build-images, or {}; or, with the tools installed natively: "
+               "cd backend/igblast && ./setup_igblast_databases.sh all all".format(
+                   BUILD_TIME, command_text(build_command(SETUP_BACKEND_IMAGE, "backend"))))
+        return True
+    say("Building the IgBLAST databases in {} (a minute or so) ...".format(image))
+    rc, _, _ = run(igblast_command(image), stream=True)
+    if rc != 0:
+        status("fail", "IgBLAST databases", "the build exited with status {}".format(rc),
+               "the lines above say why; fix that and run ./tbrc setup again (it skips what is done)")
+        return False
+    status("ok", "IgBLAST databases", "built")
+    return True
+
+
+def cluster_todo(ans, path_prefix_set):
+    root = ans["backend_path"]
+    login = shlex.quote(ans["login_host"])
+    parent = os.path.dirname(root) or "/"
+    env_name = ans["conda_env"]
+    say("== what is left to do on the cluster")
+    say("  1. Copy the backend to it (this also carries the SLURM account and partition you gave):")
+    say("       rsync -aP backend/ {}:{}/".format(login, shlex.quote(root)))
+    say("       rsync -aP environment.yml {}:{}/".format(login, shlex.quote(parent)))
+    say("  2. On the cluster, once: create the conda environment")
+    say("       cd {} && conda env create -f environment.yml -n {}".format(shlex.quote(parent), shlex.quote(env_name)))
+    say("       conda activate {} && Rscript install_r_pins.R".format(shlex.quote(env_name)))
+    say("  3. On the cluster, once: build the IgBLAST databases (needs the NCBI internal_data/ and optional_file/")
+    say("     in {}/igblast/, see backend/igblast_setup.md)".format(root))
+    say("       cd {}/igblast && ./setup_igblast_databases.sh all all".format(shlex.quote(root)))
+    say("  4. Make `ssh {}` and ssh to the data-transfer host log in with a key and no password prompt:".format(login))
+    say("     tbrc never types a password.")
+    if not path_prefix_set:
+        say("  5. cluster.path_prefix in frontend/server_config.json still holds a placeholder. Set it to the folder")
+        say("     that holds conda's `conda` command on the cluster, followed by :/usr/local/bin:/usr/bin")
+    say("Then run ./tbrc check again; the checks below show which of these are still open.")
+
+
+# -- the plan, shown by --dry-run and used by the real run
+def describe_config(cfg):
+    keep = {"storage_server": cfg.get("storage_server"), "cluster": cfg.get("cluster")}
+    return json.dumps(keep, indent=2).splitlines()
+
+
+def command_text(cmd):
+    return " ".join(shlex.quote(word) for word in cmd)
+
+
+def docker_dir():
+    return os.path.join(ROOT, "deploy", "docker")
+
+
+def images_needed(local, web_ready):
+    """[(image, Dockerfile target)] this setup needs. A run on this computer needs the backend image
+    (which `tbrc run --local` looks for by name), unless every pipeline tool is already on PATH; the
+    web app needs the unified image that docker-compose.yml runs, which also holds the pipeline."""
+    need = []
+    if local and not all(which(tool) for tool in LOCAL_TOOLS):
+        need.append((SETUP_BACKEND_IMAGE, "backend"))
+    if web_ready:
+        need.append((SETUP_UNIFIED_IMAGE, "unified"))
+    return need
+
+
+def build_command(image, target):
+    return ["docker", "build", "--target", target, "-t", image, docker_dir()]
+
+
+WHAT_IMAGE_IS_FOR = {SETUP_BACKEND_IMAGE: "the pipeline tools, for runs on this computer",
+                     SETUP_UNIFIED_IMAGE: "the web app together with the pipeline"}
+
+
+def explain_missing(missing):
+    say()
+    say("These Docker images are missing:")
+    for image, _ in missing:
+        say("  {}  ({})".format(image, WHAT_IMAGE_IS_FOR[image]))
+    say("Building them takes {} and needs internet (conda channels and GitHub). The commands are:".format(BUILD_TIME))
+    for image, target in missing:
+        say("  " + command_text(build_command(image, target)))
+
+
+def build_images(missing):
+    """Build the missing images, backend first (the unified one starts from its layers).
+    Returns the ones that are still missing: none when all were built."""
+    for number, (image, target) in enumerate(missing):
+        say("Building {} ({}) ...".format(image, BUILD_TIME))
+        rc, _, _ = run(build_command(image, target), stream=True)
+        if rc != 0:
+            status("fail", image, "the build exited with status {}".format(rc),
+                   "the lines above say why; fix that and run ./tbrc setup again (images already built are kept)")
+            return missing[number:]
+        status("ok", image, "built")
+    return []
+
+
+LAB_NOTE = (
+    "You chose the whole lab. Please read this:",
+    "  - The web app is then served over plain HTTP on your network. The password and everything people upload",
+    "    cross the network unencrypted, so anyone on that network can read them.",
+    "  - Everyone who logs in will share one account: one password, no user names. Anyone who can log in can",
+    "    submit a run under any user id, and the app uses whatever cluster or storage-server key it holds for all of them.",
+    "  - For HTTPS, change deploy/docker/Caddyfile as the comment at its top describes (a host name instead of :8080,",
+    "    ports 80 and 443 published in docker-compose.yml), or put the app behind your institution's own TLS proxy.",
+)
+
+
+def web_address(bind):
+    """What to open: localhost for this computer only; for the whole lab, this computer's real name."""
+    if bind == "127.0.0.1":
+        return "localhost"
+    return socket.gethostname() or "<this computer's name>"
+
+
+def web_folders():
+    return [os.path.join(BACKEND, *folder.split("/")) for folder in WEB_WRITABLE_FOLDERS]
+
+
+def make_web_folders():
+    """Make the folders the web container writes in. They must exist before it starts: Docker cannot create a
+    mount point inside the read-only mount of backend/."""
+    for folder in web_folders():
+        os.makedirs(folder, exist_ok=True)
+
+
+def start_commands():
+    return [["docker", "compose", "--env-file", ".env", "up", "-d"], ["bash", "seed-barcodes.sh"]]
+
+
+def start_web_app(folder):
+    """compose up with the .env, then seed the barcode sets. True unless one failed."""
+    up, seed = start_commands()
+    rc, _, _ = run(up, cwd=folder, stream=True)
+    if rc != 0:
+        status("fail", "web app", "docker compose exited with status {}".format(rc),
+               "the lines above say why; fix that, then run the commands under 'start the web app' by hand")
+        return False
+    rc, _, _ = run(seed, cwd=folder, stream=True)
+    if rc != 0:
+        status("fail", "web app", "seed-barcodes.sh exited with status {}".format(rc),
+               "the app is running; run: cd {} && bash seed-barcodes.sh".format(shlex.quote(rel_path(folder))))
+        return False
+    status("ok", "web app", "started")
+    return True
+
+
+def cmd_setup(a):
+    given = load_answers(a.answers) if a.answers else None
+    if given and given.get("password") and os.stat(a.answers).st_mode & 0o077:
+        status("warn", "answers file", "holds a password in the clear and other users can read it",
+               "chmod 600 it, or give password_hash instead, and delete the file when setup is done")
+    asker = Asker(given)
+    example = os.path.join(FRONTEND, "server_config.example.json")
+    if not os.path.isfile(example):
+        raise Fail("cannot find {}".format(rel_path(example)),
+                   "setup starts from that file, which is in a clone of the public TBRC-pipeline repository.")
+    try:
+        with open(example, encoding="utf-8") as handle:
+            template = json.load(handle)
+    except ValueError as exc:
+        raise Fail("{} is not valid JSON: {}".format(rel_path(example), exc))
+    sample_rules_module()   # the names and paths are judged by the workflow's rules; stop now if they are missing
+
+    say("tbrc setup: a few questions, then it writes the configuration." + ("  (dry run: nothing is written or run)"
+                                                                          if a.dry_run else ""))
+    ans = collect_setup_answers(asker, a.test_data or None)
+    local = ans["runs_on"] == "local"
+    web = ans["interface"] == "web"
+    if web and ans.get("audience") == "lab":
+        say()
+        for line in LAB_NOTE:
+            say(line)
+    kit = docker_dir()
+    env_example = os.path.join(kit, "env.example")
+    dockerfile = os.path.join(kit, "Dockerfile")
+    kit_ready = web and os.path.isfile(env_example) and os.path.isfile(os.path.join(kit, "docker-compose.yml"))
+    if web and not kit_ready:
+        say()
+        status("warn", "web app", "deploy/docker/ is not in this checkout",
+               "it is part of the repository, so this checkout is incomplete or older than that folder: git pull "
+               "(or clone the repository again), then run ./tbrc setup again. Everything else goes on now.")
+    password = None
+    if kit_ready and not a.dry_run:
+        password = asker.password()
+
+    # what will be written
+    files = [{"label": "configuration", "path": CONFIG_FILE, "private": False,
+              "text": json.dumps(build_server_config(template, ans), indent=2) + "\n"}]
+    cfg = json.loads(files[0]["text"])
+    if not local:
+        cluster_json = os.path.join(BACKEND, "config", "cluster.json")
+        if os.path.isfile(cluster_json):
+            with open(cluster_json, encoding="utf-8") as handle:
+                files.append({"label": "SLURM account and partition", "path": cluster_json, "private": False,
+                              "text": build_cluster_json(handle.read(), ans)})
+        else:
+            status("warn", "SLURM account and partition", "backend/config/cluster.json is missing",
+                   "set __default__.account and partition in it on the cluster")
+    bind = "127.0.0.1" if ans.get("audience") == "me" else "0.0.0.0"
+    if kit_ready:
+        with open(env_example, encoding="utf-8") as handle:
+            env_text = handle.read()
+        files.append({"label": "web app login", "path": os.path.join(kit, ".env"), "private": True,
+                      "text": None, "env_example": env_text, "bind": bind})
+
+    existing = [f for f in files if os.path.exists(f["path"])]
+    refused = []
+    if existing and not a.force:
+        if asker.interactive:
+            if not a.dry_run:
+                for f in existing:
+                    if not asker.confirm("{} already exists, and the {} would change it. Go ahead? A dated copy is "
+                                         "kept next to it ({}.bak-{}).".format(
+                                             rel_path(f["path"]), f["label"], rel_path(f["path"]), timestamp())):
+                        f["skip"] = True
+        else:
+            refused = existing
+
+    # Docker images that are needed and missing. Without a terminal this stops before anything is written,
+    # unless --build-images says to build them; in a terminal it asks.
+    need = images_needed(local, kit_ready)
+    have = docker_installed_images() if need else set()
+    missing = [item for item in need if have is None or item[0] not in have]
+    image_stop = None
+    build_now = False
+    if missing:
+        commands = [build_command(image, target) for image, target in missing]
+        how = "; ".join(command_text(c) for c in commands)
+        if have is None:
+            image_stop = ("Docker is not installed or is not running, and these images are missing: {}".format(
+                ", ".join(image for image, _ in missing)),
+                          "install Docker Desktop and start it, then run ./tbrc setup again")
+        elif not os.path.isfile(dockerfile):
+            image_stop = ("these Docker images are missing and deploy/docker/Dockerfile, which builds them, is not "
+                          "in this checkout: {}".format(", ".join(image for image, _ in missing)),
+                          "it is part of the repository: git pull (or clone it again), then run ./tbrc setup again")
+        else:
+            if a.build_images or asker.interactive:
+                explain_missing(missing)
+            if a.build_images:
+                build_now = True
+            elif asker.interactive:
+                if not a.dry_run:
+                    build_now = asker.confirm("Build them now? ({})".format(BUILD_TIME))
+            else:
+                image_stop = ("Docker images are missing: {}. Building them takes {} and needs internet".format(
+                    ", ".join(image for image, _ in missing), BUILD_TIME),
+                              "pass --build-images to build them as part of setup, or run: {}; then run ./tbrc "
+                              "setup again".format(how))
+        if image_stop and asker.interactive and not a.dry_run:
+            status("warn", "Docker images", image_stop[0], image_stop[1])   # carry on: the files are still worth writing
+            image_stop = None
+
+    if a.dry_run:
+        say()
+        plan_setup(files, ans, local, kit_ready, missing, build_now or a.build_images, asker.interactive, a)
+        if refused:
+            raise_refused(refused)
+        if image_stop:
+            raise Fail(*image_stop)
+        return 0
+    if refused:
+        raise_refused(refused)
+    if image_stop:
+        raise Fail(*image_stop)
+
+    # the hash is made only when every file is settled (and the .env is not being kept), and before
+    # anything is written
+    env_file = next((f for f in files if f.get("env_example") is not None), None)
+    if env_file is not None and not env_file.get("skip"):
+        kind, secret = password
+        env_hash = hash_password(secret) if kind == "plain" else secret
+        env_file["text"] = build_env(env_file["env_example"], env_file["bind"], env_hash.replace("$", "$$"))
+    problems = 0
+    stamp = timestamp()
+    del SETUP_WRITTEN[:]
+    say()
+    say("== writing")
+    for f in files:
+        if f.get("skip"):
+            status("skip", f["label"], "kept as it was: {}".format(rel_path(f["path"])))
+            continue
+        try:
+            backup = write_file(f["path"], f["text"], f["private"], stamp)
+        except OSError as exc:
+            raise Fail("could not write {}: {}".format(rel_path(f["path"]), exc.strerror or exc),
+                       "already written: {}. A replaced file is kept as a .bak copy next to it. Fix the cause and "
+                       "run ./tbrc setup again.".format(", ".join(rel_path(w) for w in SETUP_WRITTEN) or "nothing"))
+        SETUP_WRITTEN.append(f["path"])
+        status("ok", f["label"], "wrote {}{}".format(rel_path(f["path"]), " (mode 600)" if f["private"] else ""))
+        if backup:
+            say("       the previous file is kept as {}".format(rel_path(backup)))
+
+    if kit_ready:
+        try:
+            make_web_folders()
+        except OSError as exc:
+            raise Fail("could not make the web app's folders under backend/: {}".format(exc.strerror or exc),
+                       "make them by hand: mkdir -p " + " ".join(rel_path(f) for f in web_folders()))
+        status("ok", "web app folders", ", ".join(rel_path(f) for f in web_folders()))
+
+    if missing:
+        say()
+        say("== Docker images")
+        if build_now:
+            missing = build_images(missing)
+        else:
+            say("Not built. To build them later, run ./tbrc setup --build-images, or:")
+            for image, target in missing:
+                say("  " + command_text(build_command(image, target)))
+        if missing:
+            problems += 1
+    missing_names = [image for image, _ in missing]
+
+    if local:
+        say()
+        say("== this computer")
+        if not build_igblast():
+            problems += 1
+    else:
+        say()
+        placeholder = "/path/to/" in (cfg.get("cluster") or {}).get("path_prefix", "")
+        cluster_todo(ans, not placeholder)
+    say()
+    say("== ./tbrc check{}".format(" --local" if local else ""))
+    try:
+        rc = cmd_check(argparse.Namespace(local=local, all=False, server="", no_storage=(ans["data"] == "upload")))
+    except Fail as exc:
+        status("fail", "check", str(exc), exc.hint)
+        rc = 1
+    if rc:
+        problems += 1
+    if ans["test_data"]:
+        say()
+        say("== test library")
+        if not run_test_library(ans["test_data"], local):
+            problems += 1
+    if kit_ready:
+        say()
+        say("== the web app")
+        can_start = SETUP_UNIFIED_IMAGE not in missing_names and os.path.isfile(os.path.join(kit, ".env"))
+        start = False
+        if can_start:
+            start = a.start or (asker.interactive and asker.confirm(
+                "Start the web app now?", default=True))
+        if start:
+            if not start_web_app(kit):
+                problems += 1
+                start = False
+        if start:
+            say("  To stop it later: cd {} && docker compose --env-file .env down".format(shlex.quote(rel_path(kit))))
+        else:
+            if not can_start:
+                problems += 0 if missing_names else 1     # a missing image was counted above
+                say("  Not started: the web app image {} or {} is missing.".format(
+                    SETUP_UNIFIED_IMAGE, rel_path(os.path.join(kit, ".env"))))
+            say("  To start it:")
+            say("  cd {}".format(shlex.quote(rel_path(kit))))
+            say("  docker compose --env-file .env up -d")
+            say("  bash seed-barcodes.sh")
+        login = re.search(r"^TBRC_USER=(\S+)", env_file["env_example"], re.M)
+        say("  Then open http://{}:8080 and log in as {} with the password you chose.".format(
+            web_address(bind), login.group(1) if login else "tbrc"))
+        if bind == "0.0.0.0":
+            say("  It listens on 0.0.0.0 over plain HTTP, so everyone who can reach this computer sees the login page and "
+                "the password and the data cross the network unencrypted (see the note above). Keep the password private.")
+        if not local:
+            say("  The app reaches the cluster with a dedicated key: put it in a folder and set TBRC_SSH_DIR in "
+                "{}/.env (see {}/ssh/config).".format(rel_path(kit), rel_path(kit)))
+    say()
+    if problems:
+        say("Setup wrote its files, but {} step(s) above need attention.".format(problems))
+        return 1
+    say("Setup finished.")
+    return 0
+
+
+def raise_refused(refused):
+    names = ", ".join(rel_path(f["path"]) for f in refused)
+    raise Fail("already exists: {}".format(names),
+               "a run without a terminal never overwrites a file on its own. Pass --force to replace it; a dated "
+               ".bak-YYYYMMDD-HHMMSS copy is kept next to it.")
+
+
+def plan_setup(files, ans, local, kit_ready, missing, will_build, interactive, a):
+    for f in files:
+        state = "replaces an existing file, kept as {}.bak-<date-time>".format(rel_path(f["path"])) \
+            if os.path.exists(f["path"]) else "new file"
+        say("would write {} ({}){}".format(rel_path(f["path"]), state, ", mode 600" if f["private"] else ""))
+        if f["label"] == "configuration":
+            for line in describe_config(json.loads(f["text"])):
+                say("    " + line)
+        elif f["label"].startswith("SLURM"):
+            say("    __default__.account = {!r}, partition = {!r}".format(ans["slurm_account"], ans["slurm_partition"]))
+        else:
+            for line in build_env(f["env_example"], f["bind"], "<the hash of the password you choose; never shown>").splitlines():
+                if re.match(r"TBRC_(USER|BIND|PORT|PASSWORD_HASH|IMAGE)=", line):
+                    say("    " + line)
+    if kit_ready:
+        say("would make {} (the folders the web app may write in; the rest of backend/ is mounted read-only)".format(
+            ", ".join(rel_path(f) for f in web_folders())))
+        say("would run: {}   (the password goes in on standard input)".format(" ".join(HASH_COMMAND)))
+    for image, target in missing:
+        if will_build:
+            say("would build {}: {}".format(image, command_text(build_command(image, target))))
+        elif interactive:
+            say("would ask whether to build {}: {}".format(image, command_text(build_command(image, target))))
+        else:
+            say("would build {} only with --build-images, and otherwise stop here: {}".format(
+                image, command_text(build_command(image, target))))
+    if local:
+        if igblast_built():
+            say("would skip building the IgBLAST databases: already built")
+        else:
+            say("would run: " + command_text(igblast_command(docker_image() or "<tbrc-backend image>")))
+        say("would run: ./tbrc check --local")
+    else:
+        say("would print what is left to do on the cluster, then run: ./tbrc check{}".format(
+            " --no-storage" if ans["data"] == "upload" else ""))
+    if ans["test_data"]:
+        say("would run: ./tbrc run {}{} --fastq-dir {} --force".format(
+            " ".join(shlex.quote(w) for w in TEST_LIBRARY), " --local" if local else "", shlex.quote(ans["test_data"])))
+    if kit_ready:
+        up, seed = start_commands()
+        if a.start:
+            say("would run: {}   (in deploy/docker)".format(" ".join(up)))
+            say("would run: {}   (in deploy/docker)".format(" ".join(seed)))
+        elif interactive:
+            say("would ask whether to start the web app (docker compose --env-file .env up -d, then bash seed-barcodes.sh)")
+        else:
+            say("would print how to start the web app (docker compose --env-file .env up -d, then bash seed-barcodes.sh)")
+    say("Dry run: nothing was written or run.")
+
+
+def run_test_library(folder, local):
+    """Run the mini library and say whether it finished. True if it did."""
+    argv = ["run"] + TEST_LIBRARY + ["--fastq-dir", folder, "--force"] + (["--local"] if local else [])
+    say("Running the test library {} ({}) ...".format("TCRb_mini", "on this computer" if local else "on the cluster"))
+    try:
+        args = build_parser().parse_args(argv)
+        rc = args.func(args)
+    except Fail as exc:
+        status("fail", "test library TCRb_mini", str(exc), exc.hint)
+        return False
+    except SystemExit:
+        status("fail", "test library TCRb_mini", "the run options were not accepted")
+        return False
+    if rc != 0:
+        status("fail", "test library TCRb_mini", "did not finish (exit status {})".format(rc))
+        return False
+    status("ok", "test library TCRb_mini", "finished")
+    return True
 
 
 # ---------------------------------------------------------------- cli
@@ -876,14 +1891,31 @@ def add_run_options(p):
     where.add_argument("--force", action="store_true", help="reuse an existing run folder")
 
 
-def main(argv=None):
+def build_parser():
     ap = argparse.ArgumentParser(prog="tbrc", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
+
+    st = sub.add_parser("setup", help="ask a few questions, write the configuration, build and check what is needed")
+    st.add_argument("--answers", metavar="FILE.json", default="",
+                    help="take the answers from this JSON file instead of asking (for scripts and tests)")
+    st.add_argument("--dry-run", action="store_true", help="say what would be written and run; write and run nothing")
+    st.add_argument("--force", action="store_true",
+                    help="replace existing files without asking (a dated .bak copy is always kept); "
+                         "needed with --answers")
+    st.add_argument("--test-data", metavar="DIR", default="",
+                    help="folder with the small test library (one R1, one R2) to run as a first test")
+    st.add_argument("--build-images", action="store_true",
+                    help="build the Docker images that are missing ({}, needs internet); without a terminal, "
+                         "setup stops with the command instead".format(BUILD_TIME))
+    st.add_argument("--start", action="store_true",
+                    help="start the web app when setup is done; without a terminal setup only prints the commands")
+    st.set_defaults(func=cmd_setup)
 
     c = sub.add_parser("check", help="verify configuration, HPC, storage servers and (with --local) this machine")
     c.add_argument("--local", action="store_true", help="check only what a --local run needs")
     c.add_argument("--all", action="store_true", help="check the HPC, the storage servers and this machine")
     c.add_argument("--server", default="", help="check only this storage server")
+    c.add_argument("--no-storage", action="store_true", help="skip the storage-server checks (uploads only)")
     c.set_defaults(func=cmd_check)
 
     r = sub.add_parser("run", help="submit a run")
@@ -901,8 +1933,11 @@ def main(argv=None):
     t.add_argument("--local", action="store_true", help="run the --full test on this machine")
     t.add_argument("--cores", type=int, default=4)
     t.set_defaults(func=cmd_test)
+    return ap
 
-    a = ap.parse_args(argv)
+
+def main(argv=None):
+    a = build_parser().parse_args(argv)
     try:
         return a.func(a)
     except Fail as exc:
@@ -912,6 +1947,9 @@ def main(argv=None):
         return 2
     except KeyboardInterrupt:
         say("\ninterrupted")
+        if SETUP_WRITTEN:
+            say("files already written by setup: {} (a replaced file is kept as a .bak copy next to it)".format(
+                ", ".join(rel_path(w) for w in SETUP_WRITTEN)))
         return 130
 
 

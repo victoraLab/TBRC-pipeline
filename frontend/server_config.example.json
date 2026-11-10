@@ -127,8 +127,8 @@
       }
     },
     "library_prep_per_plate": {
-      "_comment": "Consumables for one 96-well barcode plate, heavy chain (RT + 3 PCRs). QUANTITIES come from the protocol notes and are reliable. UNIT PRICES are list-price placeholders -- the vault contains no prices at all -- so treat the total as an order of magnitude until they are replaced with real purchase costs. Items marked NOT PRICED contribute nothing and are the biggest known gap.",
-      "_protocol_source": "Obsidian: Science and Programming/Postdoc/Protocols/Sequencing/MiSeq Bulk-SingleCell. Mastermixes scale at 110 reactions per 96-well plate.",
+      "_comment": "Consumables for one 96-well barcode plate, heavy chain (RT + 3 PCRs). QUANTITIES come from the protocol notes and are reliable. UNIT PRICES are list-price placeholders -- no purchase prices are recorded -- so treat the total as an order of magnitude until they are replaced with real purchase costs. Items marked NOT PRICED contribute nothing and are the biggest known gap.",
+      "_protocol_source": "The lab's bench protocol for the MiSeq bulk single-cell library. Mastermixes scale at 110 reactions per 96-well plate.",
       "_excluded": "Instrument time, staff time, TapeStation/qPCR library QC, gel purification columns, and failed plates.",
       "consumables": [
         {

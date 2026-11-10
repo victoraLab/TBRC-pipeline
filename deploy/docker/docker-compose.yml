@@ -1,0 +1,81 @@
+# TBRC web app. Lives at <clone of TBRC-pipeline>/deploy/docker/, so the relative paths
+# below reach the clone's frontend/, backend/ and docs/.
+#
+#   docker compose --env-file .env up -d      (`./tbrc setup` writes .env and runs this)
+#
+# Two services: the app (Shiny, image tbrc-unified) and Caddy in front of it, which adds a
+# password and the websocket headers Shiny needs. `./tbrc setup` builds the image when it is
+# missing; so does `docker compose build`, from the Dockerfile here.
+#
+# Tested on one Apple Silicon Mac; not tested on Linux or Intel.
+
+services:
+  tbrc:
+    build:
+      context: .
+      target: unified
+    image: ${TBRC_IMAGE:-tbrc-unified:arm64}
+    container_name: tbrc
+    restart: unless-stopped
+    volumes:
+      # The app, read-only: updates arrive with `git pull` in the clone, then
+      # `docker restart tbrc` (global.R is read once at startup).
+      - ../../frontend:/srv/tbrc:ro
+      # The workflow, a sibling of the app (scripts/common.sh resolves <repo>/backend). Read-only:
+      # this container is the part of TBRC that faces the network, and the code it runs for a
+      # submission must not be something it can rewrite. This checkout also feeds ./tbrc and
+      # scripts/deploy_all.sh, which carry that code to other machines.
+      # A run writes in three places only, each a writable mount of its own: the run folder
+      # (data/runs/<user>/<run>), the results, and the per-run working directories (.parallel/).
+      # They must exist before the container starts, because a mount point cannot be made inside
+      # a read-only mount. `./tbrc setup` makes them; by hand:
+      #   mkdir -p backend/data/runs backend/results backend/.parallel
+      - ../../backend:/srv/backend:ro
+      - ../../backend/data/runs:/srv/backend/data/runs
+      - ../../backend/results:/srv/backend/results
+      - ../../backend/.parallel:/srv/backend/.parallel
+      - ../../docs:/srv/docs:ro
+      # State the app owns. Outside /srv/tbrc because Docker cannot create a mountpoint
+      # inside a read-only bind mount.
+      - tbrc-runs:/var/lib/tbrc/runs
+      - tbrc-bc:/var/lib/tbrc/bc
+      - tbrc-state:/var/lib/tbrc/state
+      # SSH, only needed to submit to a cluster or read a storage server. ./ssh holds a
+      # placeholder config; point TBRC_SSH_DIR at a folder with a dedicated key and config.
+      - ${TBRC_SSH_DIR:-./ssh}:/root/.ssh:ro
+    environment:
+      - TZ=${TBRC_TZ:-UTC}
+      - TBRC_STATE_DIR=/var/lib/tbrc/state
+      - TBRC_RUNS_DIR=/var/lib/tbrc/runs
+      - TBRC_BC_DIR=/var/lib/tbrc/bc
+      - TBRC_RUN_LOG_FILE=/srv/docs/run-log.tsv
+      - TBRC_CHANGELOG_FILE=/srv/docs/changelog.tsv
+      # Shiny's default is 5 MB; a paired MiSeq run is 450-560 MB.
+      - TBRC_MAX_UPLOAD_MB=${TBRC_MAX_UPLOAD_MB:-8192}
+    expose:
+      - "3838"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: tbrc-caddy
+    restart: unless-stopped
+    ports:
+      # Loopback by default: only this computer can open the app. Set TBRC_BIND=0.0.0.0 in .env
+      # to serve the lab network, and only with the password set (see Caddyfile).
+      - "${TBRC_BIND:-127.0.0.1}:${TBRC_PORT:-8080}:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      - TBRC_USER=${TBRC_USER:-tbrc}
+      - TBRC_PASSWORD_HASH=${TBRC_PASSWORD_HASH}
+    depends_on:
+      - tbrc
+
+volumes:
+  tbrc-runs:
+  tbrc-bc:
+  tbrc-state:
+  caddy-data:
+  caddy-config:

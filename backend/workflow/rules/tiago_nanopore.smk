@@ -78,30 +78,29 @@ rule demux_nanopore:
         primer_mm=param("demux", "primer_mm", 2),
         min_insert=param("demux", "min_insert_length", 250),
         rev_primers=_NP_REV_ARGS,
-        extra=lambda w, input: " ".join(
-            "--extra-fastq '{}'".format(p) for p in list(input.reads)[1:]
-        ),
+        # A list, not one string: :q quotes each word, so a file name stays one word.
+        extra=lambda w, input: [word for p in list(input.reads)[1:] for word in ("--extra-fastq", p)],
     shell:
         r"""
         set -euo pipefail
         {_NP_PATH}
-        mkdir -p "$(dirname {output.clean})" "$(dirname {output.summary})"
+        mkdir -p "$(dirname {output.clean:q})" "$(dirname {output.summary:q})"
         python3 {_SCRIPTS}/demux_nanopore_parallel.py --jobs {threads} \
-            "$(echo {input.reads} | cut -d' ' -f1)" \
-            '{params.anchors}' '{params.plates}' '{params.prefix}' \
-            --sample '{params.sample}' \
-            --well-barcode-mm {params.well_mm} \
-            --plate-barcode-mm {params.plate_mm} \
-            --primer-mm {params.primer_mm} \
-            --min-insert-length {params.min_insert} \
+            "$(echo {input.reads:q} | cut -d' ' -f1)" \
+            {params.anchors:q} {params.plates:q} {params.prefix:q} \
+            --sample {params.sample:q} \
+            --well-barcode-mm {params.well_mm:q} \
+            --plate-barcode-mm {params.plate_mm:q} \
+            --primer-mm {params.primer_mm:q} \
+            --min-insert-length {params.min_insert:q} \
             {params.rev_primers} \
-            {params.extra} > {log} 2>&1
+            {params.extra:q} > {log:q} 2>&1
         # A library sequenced one plate per file legitimately has no plate
         # cassette, and its reads land in the well-only file instead. Both
         # outputs are declared so neither path is a missing-output failure.
-        touch {output.clean} {output.partial}
-        cp "{params.prefix}.platewell_summary.tsv" {output.summary} 2>/dev/null || \
-            printf 'section\tid\tmetric\tvalue\n' > {output.summary}
+        touch {output.clean:q} {output.partial:q}
+        cp {params.prefix:q}.platewell_summary.tsv {output.summary:q} 2>/dev/null || \
+            printf 'section\tid\tmetric\tvalue\n' > {output.summary:q}
         """
 
 
@@ -132,18 +131,17 @@ rule library_qc_nanopore:
         min_insert=param("demux", "min_insert_length", 250),
         dimer_max=param("qc", "dimer_max_insert", 100),
         rev_primers=_NP_REV_ARGS,
-        reads=lambda w, input: " ".join("'{}'".format(p) for p in input.reads),
     shell:
         r"""
         set -euo pipefail
         {_NP_PATH}
-        mkdir -p "$(dirname {output.summary})"
-        python3 {_SCRIPTS}/nanopore_library_qc.py {params.reads} \
-            --well-anchors '{params.anchors}' --plate-barcodes '{params.plates}' \
-            --prefix '{params.prefix}' {params.rev_primers} \
-            --primer-mm {params.primer_mm} --well-barcode-mm {params.well_mm} \
-            --plate-barcode-mm {params.plate_mm} --min-insert {params.min_insert} \
-            --dimer-max {params.dimer_max} --jobs {threads} > {log} 2>&1
+        mkdir -p "$(dirname {output.summary:q})"
+        python3 {_SCRIPTS}/nanopore_library_qc.py {input.reads:q} \
+            --well-anchors {params.anchors:q} --plate-barcodes {params.plates:q} \
+            --prefix {params.prefix:q} {params.rev_primers} \
+            --primer-mm {params.primer_mm:q} --well-barcode-mm {params.well_mm:q} \
+            --plate-barcode-mm {params.plate_mm:q} --min-insert {params.min_insert:q} \
+            --dimer-max {params.dimer_max:q} --jobs {threads} > {log:q} 2>&1
         """
 
 
@@ -178,16 +176,16 @@ rule consensus_nanopore:
         # well-only file from reads whose plate cassette was not read, and on
         # one heavy-chain library that file (45 MB) is bigger than the plate-resolved one (24 MB).
         # Selecting on size processed 92 wells instead of 949, silently.
-        src={input.clean}
+        src={input.clean:q}
         if [ ! -s "$src" ]; then
-            src={input.partial}
+            src={input.partial:q}
         fi
-        python3 {_SCRIPTS}/nanopore_consensus.py "$src" '{params.prefix}' \
-            --cluster-wells --engine '{params.engine}' \
-            --min-reads {params.min_reads} --rescue-min-reads {params.rescue_min} \
-            --min-dominance {params.min_dominance} --max-unique {params.max_unique} \
-            --cluster-id {params.cluster_id} --jobs {threads} > {log} 2>&1
-        cp "{params.prefix}.consensus_per_well.tsv" {output.table}
+        python3 {_SCRIPTS}/nanopore_consensus.py "$src" {params.prefix:q} \
+            --cluster-wells --engine {params.engine:q} \
+            --min-reads {params.min_reads:q} --rescue-min-reads {params.rescue_min:q} \
+            --min-dominance {params.min_dominance:q} --max-unique {params.max_unique:q} \
+            --cluster-id {params.cluster_id:q} --jobs {threads} > {log:q} 2>&1
+        cp {params.prefix:q}.consensus_per_well.tsv {output.table:q}
         """
 
 
@@ -223,19 +221,19 @@ rule annotate_long_nanopore:
     shell:
         r"""
         set -euo pipefail
-        mkdir -p "$(dirname {output.airr})"
-        W="{params.igroot}/work/mouse/{params.panel}"
-        export IGDATA="{params.igroot}"
+        mkdir -p "$(dirname {output.airr:q})"
+        W={params.igroot:q}/work/mouse/{params.panel:q}
+        export IGDATA={params.igroot:q}
         # IgBLAST wants a D database even for loci that have no D gene. Without
         # one it falls back to a default name that does not exist and dies with
         # "No alias or index file found for [mouse_gl_D]". Light chain therefore
         # borrows the heavy chain D database, which is what it is for.
-        if [ -f "$W/mouse_{params.panel}_D.nhr" ]; then
-            D="-germline_db_D $W/mouse_{params.panel}_D"
+        if [ -f "$W/mouse_"{params.panel:q}"_D.nhr" ]; then
+            D="-germline_db_D $W/mouse_"{params.panel:q}"_D"
         else
-            D="-germline_db_D {params.igroot}/work/mouse/igh/mouse_igh_D"
+            D="-germline_db_D "{params.igroot:q}"/work/mouse/igh/mouse_igh_D"
         fi
-        igblastn -germline_db_V "$W/mouse_{params.panel}_V"                  -germline_db_J "$W/mouse_{params.panel}_J" $D                  -auxiliary_data "{params.igroot}/optional_file/mouse_gl.aux"                  -organism mouse -ig_seqtype Ig -domain_system imgt                  -query {input.fasta} -outfmt 19 -num_threads {threads}                  -out {output.airr} > {log} 2>&1
+        igblastn -germline_db_V "$W/mouse_"{params.panel:q}"_V"                  -germline_db_J "$W/mouse_"{params.panel:q}"_J" $D                  -auxiliary_data {params.igroot:q}/optional_file/mouse_gl.aux                  -organism mouse -ig_seqtype Ig -domain_system imgt                  -query {input.fasta:q} -outfmt 19 -num_threads {threads}                  -out {output.airr:q} > {log:q} 2>&1
         """
 
 
@@ -267,12 +265,12 @@ rule vdj_consensus_nanopore:
         r"""
         set -euo pipefail
         {_NP_PATH}
-        src={input.clean}
+        src={input.clean:q}
         if [ ! -s "$src" ]; then
-            src={input.partial}
+            src={input.partial:q}
         fi
-        python3 {_SCRIPTS}/nanopore_vdj_consensus.py "$src" {input.long_fa} {input.airr}             '{params.prefix}' --min-mean-q {params.min_q} --min-reads {params.min_reads}             --max-unique {params.max_unique} --min-depth {params.min_depth}             --min-base-fraction {params.min_frac} --jobs {threads} > {log} 2>&1
-        cp "{params.prefix}.vdj_per_well.tsv" {output.table}
+        python3 {_SCRIPTS}/nanopore_vdj_consensus.py "$src" {input.long_fa:q} {input.airr:q}             {params.prefix:q} --min-mean-q {params.min_q:q} --min-reads {params.min_reads:q}             --max-unique {params.max_unique:q} --min-depth {params.min_depth:q}             --min-base-fraction {params.min_frac:q} --jobs {threads} > {log:q} 2>&1
+        cp {params.prefix:q}.vdj_per_well.tsv {output.table:q}
         """
 
 
@@ -298,9 +296,9 @@ rule isotype_nanopore:
         r"""
         set -euo pipefail
         {_NP_PATH}
-        src={input.clean}
-        if [ ! -s "$src" ]; then src={input.partial}; fi
-        python3 {_SCRIPTS}/nanopore_isotype.py "$src" {input.long_fa} {output.table}             --jobs {threads} > {log} 2>&1
+        src={input.clean:q}
+        if [ ! -s "$src" ]; then src={input.partial:q}; fi
+        python3 {_SCRIPTS}/nanopore_isotype.py "$src" {input.long_fa:q} {output.table:q}             --jobs {threads} > {log:q} 2>&1
         """
 
 
@@ -323,7 +321,7 @@ rule clonality_nanopore:
     shell:
         r"""
         set -euo pipefail
-        Rscript {_SCRIPTS}/nanopore_clonality.R {input.airr} {input.isotype}             {input.cons} {output.table} > {log} 2>&1
+        Rscript {_SCRIPTS}/nanopore_clonality.R {input.airr:q} {input.isotype:q}             {input.cons:q} {output.table:q} > {log:q} 2>&1
         """
 
 
@@ -349,13 +347,13 @@ rule emit_nanopore:
         # every other pipeline. Creating it as a directory raises
         # ImproperOutputException: snakemake requires directory outputs to be
         # declared with directory(), and this one is not a directory.
-        mkdir -p "$(dirname {output.final})" "$(dirname {output.marker})"
-        touch {output.marker}
-        python3 {_SCRIPTS}/nanopore_emit_fasta.py {input.fasta} {output.final}
+        mkdir -p "$(dirname {output.final:q})" "$(dirname {output.marker:q})"
+        touch {output.marker:q}
+        python3 {_SCRIPTS}/nanopore_emit_fasta.py {input.fasta:q} {output.final:q}
         # collapsed.stats.txt is what plate_stats.R reads to draw the plate maps.
         # One consensus per well means the per-well count IS the read support,
         # which is the number worth plotting.
-        python3 {_SCRIPTS}/nanopore_emit_stats.py '{input.table}' '{output.collapsed}' > {log} 2>&1
-        n=$(grep -c '^>' {output.final} || true)
-        echo "tiago_nanopore emitted ${{n}} per-well consensus sequences" >> {log}
+        python3 {_SCRIPTS}/nanopore_emit_stats.py {input.table:q} {output.collapsed:q} > {log:q} 2>&1
+        n=$(grep -c '^>' {output.final:q} || true)
+        echo "tiago_nanopore emitted ${{n}} per-well consensus sequences" >> {log:q}
         """
